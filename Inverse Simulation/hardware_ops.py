@@ -313,7 +313,7 @@ class LinearStageControllerKIM:
 class LinearStageController:
 
     def __init__(self, serial_numbers, stage_settings_names=None,
-                 polling_interval=250, home_on_start=False):
+                 backlash_mm=None, polling_interval=250, home_on_start=False):
         if isinstance(serial_numbers, dict):
             self.serial_numbers = list(serial_numbers.keys())
             self.stage_settings_names = serial_numbers
@@ -321,6 +321,7 @@ class LinearStageController:
             self.serial_numbers = serial_numbers
             self.stage_settings_names = stage_settings_names or {}
 
+        self.backlash_mm = backlash_mm or {}
         self.polling_interval = polling_interval
         self.controllers = {}
         self.initialize_devices(home_on_start=home_on_start)
@@ -353,6 +354,8 @@ class LinearStageController:
             time.sleep(0.5)
 
             self.controllers[sn] = stage
+            if sn in self.backlash_mm:
+                self.set_backlash(sn, self.backlash_mm[sn])
 
             if home_on_start:
                 self.home(sn)
@@ -385,25 +388,138 @@ class LinearStageController:
 
         print(f"Move complete for {sn}")
 
-    def set_software_position(self, sn, position_mm=10.0):
-        """Set the Kinesis position counter for the current physical location."""
+    def get_backlash(self, sn, refresh=True):
         device = self.controllers[sn]
+        if refresh:
+            try:
+                device.RequestBacklash()
+                time.sleep(0.05)
+            except Exception:
+                pass
+        return float(str(device.GetBacklash()))
+
+    def get_backlash_device_units(self, sn, refresh=True):
+        device = self.controllers[sn]
+        if refresh:
+            try:
+                device.RequestBacklash()
+                time.sleep(0.05)
+            except Exception:
+                pass
+        return int(device.GetBacklash_DeviceUnit())
+
+    def set_backlash(self, sn, backlash_mm=0.0):
+        device = self.controllers[sn]
+        backlash_mm = float(backlash_mm)
+        if backlash_mm < 0:
+            raise ValueError("backlash_mm must be non-negative.")
+        print(f"Setting KDC101 stage {sn} backlash to {backlash_mm} mm")
+        device.SetBacklash(Decimal(backlash_mm))
+        time.sleep(0.1)
+        try:
+            device.RequestBacklash()
+            time.sleep(0.05)
+        except Exception:
+            pass
+        new_backlash = self.get_backlash(sn, refresh=False)
+        print(f"New backlash for {sn}: {new_backlash} mm")
+        return new_backlash
+
+    def disable_backlash(self, sn):
+        return self.set_backlash(sn, 0.0)
+
+    def _position_mm_to_device_units(self, device, position_mm):
         converter = device.UnitConverter
         unit_type = DeviceUnitConverter.UnitType.Length
-        position_counts = int(converter.RealToDeviceUnit(Decimal(float(position_mm)), unit_type))
+        return int(converter.RealToDeviceUnit(Decimal(float(position_mm)), unit_type))
+
+    def _device_units_to_position_mm(self, device, device_units):
+        converter = device.UnitConverter
+        unit_type = DeviceUnitConverter.UnitType.Length
+        return float(str(converter.DeviceUnitToReal(Decimal(int(device_units)), unit_type)))
+
+    def set_software_position(self, sn, position_mm=10.0, set_encoder_counter=True, refresh=True):
+        """Set the Kinesis software position for the current physical location."""
+        device = self.controllers[sn]
+        position_counts = self._position_mm_to_device_units(device, position_mm)
         print(
             f"Setting KDC101 stage {sn} current software position "
             f"to {position_mm} mm ({position_counts} device units)"
         )
+
+        try:
+            device.StopPolling()
+            time.sleep(0.05)
+        except Exception:
+            pass
+
         device.SetPositionCounter(position_counts)
+        if set_encoder_counter and hasattr(device, "SetEncoderCounter"):
+            device.SetEncoderCounter(position_counts)
+
         time.sleep(0.1)
-        print(f"New software position for {sn}: {self.get_position(sn)} mm")
+        try:
+            device.StartPolling(self.polling_interval)
+            time.sleep(0.1)
+        except Exception:
+            pass
 
-    def set_current_position(self, sn, position_mm=10.0):
-        return self.set_software_position(sn, position_mm=position_mm)
+        if refresh:
+            try:
+                device.RequestPosition()
+            except Exception:
+                pass
+            try:
+                device.RequestEncoderCounter()
+            except Exception:
+                pass
+            time.sleep(0.1)
 
-    def get_position(self, sn):
+        new_position = self.get_position(sn)
+        try:
+            position_counter = int(device.GetPositionCounter())
+            position_counter_mm = self._device_units_to_position_mm(device, position_counter)
+        except Exception:
+            position_counter = None
+            position_counter_mm = None
+        try:
+            encoder_counter = int(device.GetEncoderCounter())
+            encoder_counter_mm = self._device_units_to_position_mm(device, encoder_counter)
+        except Exception:
+            encoder_counter = None
+            encoder_counter_mm = None
+
+        print(f"New software position for {sn}: {new_position} mm")
+        if position_counter is not None:
+            print(
+                f"Position counter for {sn}: "
+                f"{position_counter} device units ({position_counter_mm} mm)"
+            )
+        if encoder_counter is not None:
+            print(
+                f"Encoder counter for {sn}: "
+                f"{encoder_counter} device units ({encoder_counter_mm} mm)"
+            )
+        if abs(float(new_position) - float(position_mm)) > 1e-3:
+            print(
+                f"[WARN] Requested {position_mm} mm but read back {new_position} mm. "
+                "If the counters above are also unchanged, the controller rejected "
+                "the counter update; power-cycle/reconnect or home the stage before "
+                "continuing."
+            )
+        return new_position
+
+    def set_current_position(self, sn, position_mm=10.0, **kwargs):
+        return self.set_software_position(sn, position_mm=position_mm, **kwargs)
+
+    def get_position(self, sn, refresh=False):
         device = self.controllers[sn]
+        if refresh:
+            try:
+                device.RequestPosition()
+                time.sleep(0.05)
+            except Exception:
+                pass
         try:
             return float(str(device.GetPosition()))
         except AttributeError:
@@ -544,6 +660,7 @@ class HardwareOps:
         self.quad_serials = config["quad_serials"]
         self.linear_stage_serials = config.get("linear_stage_serials", [])
         self.linear_stage_settings = config.get("linear_stage_settings", {})
+        self.linear_stage_backlash_mm = config.get("linear_stage_backlash_mm", {})
         self.kim_stage_serials = config.get("kim_stage_serials", config.get("stage_serials", []))
         self.rotation_stage_ports = config.get("rotation_stage_ports", {})
 
@@ -552,7 +669,8 @@ class HardwareOps:
         self.stages = (
             LinearStageController(
                 self.linear_stage_serials,
-                stage_settings_names=self.linear_stage_settings
+                stage_settings_names=self.linear_stage_settings,
+                backlash_mm=self.linear_stage_backlash_mm
             )
             if self.linear_stage_serials else None
         )

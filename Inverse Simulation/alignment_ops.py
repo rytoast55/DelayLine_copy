@@ -15,8 +15,10 @@ except Exception:
 DEFAULT_LINEAR_STAGE_SERIALS = {
     "M1": "27266900",
     "M2": "27266901",
-    "M3": "27601694",
 }
+DEFAULT_MOVING_LINEAR_STAGES = ("M1", "M2")
+DEFAULT_LINEAR_STAGE_GUARD_MM = getattr(S, "DEFAULT_LINEAR_STAGE_GUARD_MM", 0.10)
+DEFAULT_LINEAR_STAGE_REPLAN_TOLERANCE_MM = 1e-3
 
 DEFAULT_ROTATION_CONTROLLER = "newport"
 DEFAULT_ROTATION_DEGREES_PER_SUBSTEP = 0.0023
@@ -33,12 +35,6 @@ DEFAULT_ACTUATOR_MAP = {
         "mirror": "M2",
         "serial": DEFAULT_LINEAR_STAGE_SERIALS["M2"],
         "direction": -1.0,
-    },
-    "M3.dx": {
-        "kind": "linear",
-        "mirror": "M3",
-        "serial": DEFAULT_LINEAR_STAGE_SERIALS["M3"],
-        "direction": 1.0,
     },
     "M1.dangle": {
         "kind": "rotation",
@@ -91,6 +87,18 @@ def _merged_actuator_map(actuator_map):
             base.update(config)
             merged[label] = base
     return merged
+
+
+def _linear_stage_order_from_actuator_map(actuator_map):
+    ordered = []
+    for mirror_name in ("M1", "M2", "M3"):
+        mapping = actuator_map.get(f"{mirror_name}.dx")
+        if mapping is None or mapping.get("kind") != "linear":
+            continue
+        mapped_mirror = mapping.get("mirror", mirror_name)
+        if mapped_mirror not in ordered:
+            ordered.append(mapped_mirror)
+    return tuple(ordered) if ordered else DEFAULT_MOVING_LINEAR_STAGES
 
 
 def _normalized_rotation_calibration(rotation_calibration):
@@ -270,9 +278,8 @@ def _initial_linear_stage_locs(
         M1_linear_loc=None,
         M2_linear_loc=None,
         M3_linear_loc=None,
-        dry_run=False):
-    '''Read any unknown linear stage positions, or just assume at midpoint if not able to'''
-    
+        dry_run=False,
+        prefer_hardware_positions=False):
     provided = {
         "M1": M1_linear_loc,
         "M2": M2_linear_loc,
@@ -280,26 +287,68 @@ def _initial_linear_stage_locs(
     }
     locs = {}
     midpoint = getattr(S, "LINEAR_STAGE_TRAVEL_MM", 24.0) / 2.0
-
+    active_linear_stages = list(_linear_stage_order_from_actuator_map(actuator_map))
     for mirror_name, provided_loc in provided.items():
-        if provided_loc is not None:
-            locs[mirror_name] = float(provided_loc)
-            continue
+        if provided_loc is not None and mirror_name not in active_linear_stages:
+            active_linear_stages.append(mirror_name)
 
+    for mirror_name in active_linear_stages:
+        provided_loc = provided.get(mirror_name)
         label = f"{mirror_name}.dx"
         mapping = actuator_map.get(label)
         if (
+            prefer_hardware_positions and
             not dry_run and
             hardware is not None and
             getattr(hardware, "stages", None) is not None and
             mapping is not None
         ):
-            direction = float(mapping.get("direction", 1.0))
-            locs[mirror_name] = direction * float(hardware.stages.get_position(mapping["serial"]))
+            locs[mirror_name] = float(hardware.stages.get_position(mapping["serial"]))
+        elif provided_loc is not None:
+            locs[mirror_name] = float(provided_loc)
+            continue
+        elif (
+            not dry_run and
+            hardware is not None and
+            getattr(hardware, "stages", None) is not None and
+            mapping is not None
+        ):
+            locs[mirror_name] = float(hardware.stages.get_position(mapping["serial"]))
         else:
             locs[mirror_name] = float(midpoint)
 
     return locs
+
+
+def _linear_stage_allowed_position_range(position_mm, linear_stage_guard_mm=DEFAULT_LINEAR_STAGE_GUARD_MM):
+    if hasattr(S, "_linear_stage_allowed_loc_range"):
+        return S._linear_stage_allowed_loc_range(
+            position_mm,
+            linear_stage_guard_mm=linear_stage_guard_mm
+        )
+
+    travel_mm = float(getattr(S, "LINEAR_STAGE_TRAVEL_MM", 24.0))
+    guard = float(linear_stage_guard_mm)
+    if guard < 0:
+        raise ValueError("linear_stage_guard_mm must be non-negative.")
+    if guard * 2 >= travel_mm:
+        raise ValueError(
+            f"linear_stage_guard_mm={guard} leaves no usable travel for {travel_mm} mm stages."
+        )
+    position_mm = float(position_mm)
+    if position_mm < -1e-9 or position_mm > travel_mm + 1e-9:
+        raise ValueError(f"linear stage position must be between 0 and {travel_mm} mm.")
+    position_mm = float(np.clip(position_mm, 0.0, travel_mm))
+    return min(guard, position_mm), max(travel_mm - guard, position_mm)
+
+
+def _clip_linear_hardware_delta_to_range(delta_mm, before_position_mm, loc_min, loc_max):
+    delta_mm = float(delta_mm)
+    before_position_mm = float(before_position_mm)
+    target_position_mm = before_position_mm + delta_mm
+    clipped_target_position_mm = float(np.clip(target_position_mm, loc_min, loc_max))
+    clipped_delta_mm = clipped_target_position_mm - before_position_mm
+    return clipped_delta_mm, target_position_mm, clipped_target_position_mm
 
 
 def assimilate_rotation_angle_from_qc(
@@ -1128,29 +1177,44 @@ def _execute_linear_step(
         linear_stage_locs,
         *,
         dry_run,
-        linear_settle_delay):
-    '''Execute a linear stage movement described by the passed in step. Updates x_model with
-    the actual step made, and x_physical (only if doing a dry run). Returns details about the move'''
-
+        linear_settle_delay,
+        linear_stage_guard_mm=DEFAULT_LINEAR_STAGE_GUARD_MM,
+        linear_stage_replan_tolerance_mm=DEFAULT_LINEAR_STAGE_REPLAN_TOLERANCE_MM):
     axis_index = step["axis_index"]
     command_value = float(step["command_value"])
     direction = float(mapping.get("direction", 1.0))
-    hardware_delta = direction * command_value
+    if direction == 0:
+        raise ValueError(f"Linear actuator {step.get('actuator')} has zero hardware direction.")
+    planned_hardware_delta = direction * command_value
+    hardware_delta = planned_hardware_delta
     serial = mapping["serial"]
     mirror_name = mapping.get("mirror", step["actuator"].split(".")[0])
 
-    before_sim_position = linear_stage_locs.get(mirror_name)
-    after_sim_position = None
+    before_stage_position = linear_stage_locs.get(mirror_name)
+    after_stage_position = None
     before_hardware_position = None
     after_hardware_position = None
     actual_sim_delta = command_value
 
     if dry_run:
-        # If doing a dry run, assume it works perfectly according to simulation
-        if before_sim_position is None:
-            before_sim_position = 0.0
-        after_sim_position = before_sim_position + command_value
-        x_physical[axis_index] += command_value
+        if before_stage_position is None:
+            before_stage_position = 0.0
+        before_stage_position = float(before_stage_position)
+        loc_min, loc_max = _linear_stage_allowed_position_range(
+            before_stage_position,
+            linear_stage_guard_mm=linear_stage_guard_mm
+        )
+        hardware_delta, planned_after_stage_position, after_stage_position = (
+            _clip_linear_hardware_delta_to_range(
+                planned_hardware_delta,
+                before_stage_position,
+                loc_min,
+                loc_max
+            )
+        )
+        clipped_after_stage_position = after_stage_position
+        actual_sim_delta = hardware_delta / direction
+        x_physical[axis_index] += actual_sim_delta
     else:
         # Not a dry run, actually moving the actuator
         if hardware is None or getattr(hardware, "stages", None) is None:
@@ -1158,10 +1222,22 @@ def _execute_linear_step(
 
         # Get the actuator's starting position
         before_hardware_position = float(hardware.stages.get_position(serial))
-        if before_sim_position is None:
-            before_sim_position = direction * before_hardware_position
-
-        # Move the actuator along specified step
+        if before_stage_position is None:
+            before_stage_position = before_hardware_position
+        else:
+            before_stage_position = float(before_stage_position)
+        loc_min, loc_max = _linear_stage_allowed_position_range(
+            before_hardware_position,
+            linear_stage_guard_mm=linear_stage_guard_mm
+        )
+        hardware_delta, planned_after_stage_position, clipped_after_stage_position = (
+            _clip_linear_hardware_delta_to_range(
+                planned_hardware_delta,
+                before_hardware_position,
+                loc_min,
+                loc_max
+            )
+        )
         hardware.stages.move_relative(serial, hardware_delta)
 
         # Wait until movement is done and everything is settled
@@ -1174,24 +1250,50 @@ def _execute_linear_step(
 
         # Update the simulation posiion with the actual step made
         actual_sim_delta = actual_hardware_delta / direction
-        after_sim_position = before_sim_position + actual_sim_delta
+        after_stage_position = after_hardware_position
 
     # Update with the actual step size that occurred
     x_model[axis_index] += actual_sim_delta
-    linear_stage_locs[mirror_name] = after_sim_position
+    linear_stage_locs[mirror_name] = after_stage_position
+    linear_stage_replan_tolerance_mm = float(linear_stage_replan_tolerance_mm)
+    hardware_delta_error = float(abs(hardware_delta - planned_hardware_delta))
+    sim_delta_error = float(abs(actual_sim_delta - command_value))
+    command_was_clipped = hardware_delta_error > linear_stage_replan_tolerance_mm
+    actual_motion_mismatch = sim_delta_error > linear_stage_replan_tolerance_mm
+    replan_recommended = command_was_clipped or actual_motion_mismatch
 
     return {
         "kind": "linear",
         "serial": serial,
         "planned_sim_delta": command_value,
+        "planned_hardware_delta": planned_hardware_delta,
         "hardware_delta": hardware_delta,
         "actual_sim_delta": actual_sim_delta,
-        "before_position": before_hardware_position if not dry_run else before_sim_position,
-        "after_position": after_hardware_position if not dry_run else after_sim_position,
+        "hardware_delta_error": hardware_delta_error,
+        "sim_delta_error": sim_delta_error,
+        "linear_stage_replan_tolerance_mm": linear_stage_replan_tolerance_mm,
+        "linear_stage_clipped": bool(command_was_clipped),
+        "linear_stage_actual_mismatch": bool(actual_motion_mismatch),
+        "replan_recommended": bool(replan_recommended),
+        "replan_reason": (
+            "linear stage command clipped to guarded travel range"
+            if command_was_clipped else (
+                "linear stage actual motion differed from planned motion"
+                if actual_motion_mismatch else None
+            )
+        ),
+        "before_position": before_hardware_position if not dry_run else before_stage_position,
+        "after_position": after_hardware_position if not dry_run else after_stage_position,
+        "planned_after_stage_position": planned_after_stage_position,
+        "clipped_after_stage_position": clipped_after_stage_position,
+        "commanded_after_stage_position": after_stage_position,
+        "guarded_position_range": [float(loc_min), float(loc_max)],
         "before_hardware_position": before_hardware_position,
         "after_hardware_position": after_hardware_position,
-        "before_sim_position": before_sim_position,
-        "after_sim_position": after_sim_position,
+        "before_stage_position": before_stage_position,
+        "after_stage_position": after_stage_position,
+        "before_sim_position": before_stage_position,
+        "after_sim_position": after_stage_position,
     }
 
 
@@ -1878,6 +1980,8 @@ def execute_OPD_closed_loop(
         M1_linear_loc=None,
         M2_linear_loc=None,
         M3_linear_loc=None,
+        linear_stage_guard_mm=DEFAULT_LINEAR_STAGE_GUARD_MM,
+        linear_stage_replan_tolerance_mm=DEFAULT_LINEAR_STAGE_REPLAN_TOLERANCE_MM,
         replan_every=5,
         qc_step_tolerance=0.15,
         qc_replan_tolerance=0.35,
@@ -1928,12 +2032,15 @@ def execute_OPD_closed_loop(
 
     # Set up variables for later
     actuator_map = _merged_actuator_map(actuator_map)
+    active_linear_stages = _linear_stage_order_from_actuator_map(actuator_map)
     rotation_calibration = _normalized_rotation_calibration(rotation_calibration)
     rng = np.random.default_rng(rng_seed)
     choose_OPD_kwargs = dict(choose_OPD_kwargs or {})
     qc_hardware_stop = float(qc_hardware_stop)
     qc_detector_limit = float(qc_detector_limit)
     qc_plan_limit = float(qc_plan_limit)
+    linear_stage_guard_mm = float(linear_stage_guard_mm)
+    linear_stage_replan_tolerance_mm = float(linear_stage_replan_tolerance_mm)
     final_OPD_acceptance_tolerance = max(float(target_OPD_tolerance), float(final_OPD_relaxed_tolerance))
 
     # Determine starting state
@@ -1953,6 +2060,7 @@ def execute_OPD_closed_loop(
         M2_linear_loc=M2_linear_loc,
         M3_linear_loc=M3_linear_loc,
         dry_run=dry_run,
+        prefer_hardware_positions=True,
     )
 
     # Initialize variable defaults
@@ -1966,7 +2074,8 @@ def execute_OPD_closed_loop(
 
     log(
         f"start target_OPD={target_OPD:.3f} dry_run={dry_run} "
-        f"linear_locs={linear_stage_locs}"
+        f"linear_locs={linear_stage_locs} "
+        f"linear_stage_guard={linear_stage_guard_mm:.3f}"
     )
 
     
@@ -1987,6 +2096,8 @@ def execute_OPD_closed_loop(
         planner_kwargs.setdefault("qc_hardware_stop", qc_hardware_stop)
         planner_kwargs.setdefault("final_OPD_relaxed_tolerance", final_OPD_relaxed_tolerance)
         planner_kwargs.setdefault("final_center_qc_priority", True)
+        planner_kwargs.setdefault("moving_linear_stages", active_linear_stages)
+        planner_kwargs.setdefault("linear_stage_guard_mm", linear_stage_guard_mm)
         mirrors_opt, final_res, latest_plan = S.choose_OPD(
             target_OPD,
             *current_mirrors,
@@ -1996,7 +2107,7 @@ def execute_OPD_closed_loop(
             target_OPD_tolerance=target_OPD_tolerance,
             M1_linear_loc=linear_stage_locs["M1"],
             M2_linear_loc=linear_stage_locs["M2"],
-            M3_linear_loc=linear_stage_locs["M3"],
+            M3_linear_loc=linear_stage_locs.get("M3"),
             profile=bool(profile),
             profile_sink=planner_profile.append,
             **planner_kwargs,
@@ -2063,6 +2174,8 @@ def execute_OPD_closed_loop(
                         linear_stage_locs,
                         dry_run=dry_run,
                         linear_settle_delay=linear_settle_delay,
+                        linear_stage_guard_mm=linear_stage_guard_mm,
+                        linear_stage_replan_tolerance_mm=linear_stage_replan_tolerance_mm,
                     )
                 elif mapping["kind"] == "rotation":
                     # Make rotational step
@@ -2151,10 +2264,17 @@ def execute_OPD_closed_loop(
 
             # Check if we need to plan out a new path to follow
             if detail.get("replan_recommended"):
-                replan_reason = (
-                    f"{actuator_label} QC target miss "
-                    f"{detail.get('distance_to_target'):.3f} mm"
-                )
+                distance_to_target = detail.get("distance_to_target")
+                detail_reason = detail.get("replan_reason")
+                if distance_to_target is not None:
+                    replan_reason = (
+                        f"{actuator_label} QC target miss "
+                        f"{float(distance_to_target):.3f} mm"
+                    )
+                elif detail_reason:
+                    replan_reason = f"{actuator_label} {detail_reason}"
+                else:
+                    replan_reason = f"{actuator_label} requested replanning"
                 break
 
             # If we've gone long enough without replanning, break out of this path and replan
@@ -2236,6 +2356,7 @@ def execute_OPD_closed_loop(
         "max_abs_measured_qc": float(max_abs_measured_qc),
         "rollback_count": int(rollback_count),
         "linear_stage_locs": dict(linear_stage_locs),
+        "moving_linear_stages": list(active_linear_stages),
         "rotation_calibration": dict(rotation_calibration),
         "execution_log": execution_log,
         "planner_runs": planner_runs,
@@ -2248,6 +2369,8 @@ def execute_OPD_closed_loop(
         "qc_detector_limit": float(qc_detector_limit),
         "qc_plan_limit": float(qc_plan_limit),
         "qc_hardware_stop": float(qc_hardware_stop),
+        "linear_stage_guard_mm": float(linear_stage_guard_mm),
+        "linear_stage_replan_tolerance_mm": float(linear_stage_replan_tolerance_mm),
         "min_qc_step_tolerance": float(min_qc_step_tolerance),
         "clip_qc_target_to_safety": bool(clip_qc_target_to_safety),
         "final_qc_tolerance": float(final_qc_tolerance),
@@ -2279,6 +2402,8 @@ def execute_OPD_fixed_plan(
         M1_linear_loc=None,
         M2_linear_loc=None,
         M3_linear_loc=None,
+        linear_stage_guard_mm=DEFAULT_LINEAR_STAGE_GUARD_MM,
+        linear_stage_replan_tolerance_mm=DEFAULT_LINEAR_STAGE_REPLAN_TOLERANCE_MM,
         qc_plan_limit=1.5,
         qc_detector_limit=3.9,
         qc_hardware_stop=3.5,
@@ -2288,12 +2413,12 @@ def execute_OPD_fixed_plan(
         require_final_qc=False,
         allow_final_qc_planner_failure=True,
         fast_qc_avg=3,
-        fast_qc_delay=0.3,
+        fast_qc_delay=0.04,
         final_qc_avg=5,
-        final_qc_delay=0.3,
+        final_qc_delay=0.04,
         linear_settle_delay=2.0,
-        rotation_settle_delay=0.35,
-        step_settle_delay=0.35,
+        rotation_settle_delay=0.04,
+        step_settle_delay=0.04,
         qc_readout_sign=-1.0,
         max_total_steps=300,
         max_rotation_chunks_per_step=50,
@@ -2320,6 +2445,7 @@ def execute_OPD_fixed_plan(
 
     # Set up variables for later
     actuator_map = _merged_actuator_map(actuator_map)
+    active_linear_stages = _linear_stage_order_from_actuator_map(actuator_map)
     rotation_calibration = _normalized_rotation_calibration(rotation_calibration)
     rng = np.random.default_rng(rng_seed)
     choose_OPD_kwargs = dict(choose_OPD_kwargs or {})
@@ -2331,6 +2457,8 @@ def execute_OPD_fixed_plan(
     qc_plan_limit = float(qc_plan_limit)
     qc_detector_limit = float(qc_detector_limit)
     qc_hardware_stop = float(qc_hardware_stop)
+    linear_stage_guard_mm = float(linear_stage_guard_mm)
+    linear_stage_replan_tolerance_mm = float(linear_stage_replan_tolerance_mm)
 
     # Determine starting state
     base_mirrors = (
@@ -2349,6 +2477,7 @@ def execute_OPD_fixed_plan(
         M2_linear_loc=M2_linear_loc,
         M3_linear_loc=M3_linear_loc,
         dry_run=dry_run,
+        prefer_hardware_positions=True,
     )
 
     planner_kwargs = dict(choose_OPD_kwargs)
@@ -2360,6 +2489,8 @@ def execute_OPD_fixed_plan(
     planner_kwargs.setdefault("final_center_qc_threshold", final_qc_tolerance)
     planner_kwargs.setdefault("final_OPD_relaxed_tolerance", final_OPD_tolerance)
     planner_kwargs.setdefault("final_center_qc_priority", True)
+    planner_kwargs.setdefault("moving_linear_stages", active_linear_stages)
+    planner_kwargs.setdefault("linear_stage_guard_mm", linear_stage_guard_mm)
 
     # Search for a valid path a state with the desired OPD
     planner_profile = []
@@ -2369,7 +2500,7 @@ def execute_OPD_fixed_plan(
         return_actuation_plan=True,
         M1_linear_loc=linear_stage_locs["M1"],
         M2_linear_loc=linear_stage_locs["M2"],
-        M3_linear_loc=linear_stage_locs["M3"],
+        M3_linear_loc=linear_stage_locs.get("M3"),
         profile=bool(profile),
         profile_sink=planner_profile.append,
         **planner_kwargs,
@@ -2398,7 +2529,9 @@ def execute_OPD_fixed_plan(
     log(
         f"start target_OPD={target_OPD:.3f} dry_run={dry_run} "
         f"planned_steps={len(steps)} failure={failure_reason} "
-        f"ignored_planner_failure={planner_failure_ignored}"
+        f"ignored_planner_failure={planner_failure_ignored} "
+        f"linear_locs={linear_stage_locs} "
+        f"linear_stage_guard={linear_stage_guard_mm:.3f}"
     )
 
     execution_log = []
@@ -2447,6 +2580,8 @@ def execute_OPD_fixed_plan(
                     linear_stage_locs,
                     dry_run=dry_run,
                     linear_settle_delay=linear_settle_delay,
+                    linear_stage_guard_mm=linear_stage_guard_mm,
+                    linear_stage_replan_tolerance_mm=linear_stage_replan_tolerance_mm,
                 )
             elif mapping["kind"] == "rotation":
                 # If the step involves rotating a rotational stage, rotate it
@@ -2597,6 +2732,13 @@ def execute_OPD_fixed_plan(
             # If this step resulted in a failure, stop stepping
             failure_reason = detail["failure_reason"]
             break
+        if detail.get("replan_recommended"):
+            detail_reason = detail.get("replan_reason") or "requested replanning"
+            failure_reason = (
+                f"{actuator_label} {detail_reason}; fixed plan stopped after the "
+                "clipped move so a new plan can be computed from the current hardware state."
+            )
+            break
         if float(np.max(np.abs(after_qc["y"]))) > qc_hardware_stop:
             # If either quadcell error is too high, stop stepping
             failure_reason = (
@@ -2713,6 +2855,7 @@ def execute_OPD_fixed_plan(
         "max_abs_OPD_divergence": float(max_abs_OPD_divergence),
         "rollback_count": int(rollback_count),
         "linear_stage_locs": dict(linear_stage_locs),
+        "moving_linear_stages": list(active_linear_stages),
         "rotation_calibration": dict(rotation_calibration),
         "execution_log": execution_log,
         "planner_runs": [{
@@ -2727,6 +2870,8 @@ def execute_OPD_fixed_plan(
         "qc_detector_limit": float(qc_detector_limit),
         "qc_hardware_stop": float(qc_hardware_stop),
         "qc_step_tolerance": float(qc_step_tolerance),
+        "linear_stage_guard_mm": float(linear_stage_guard_mm),
+        "linear_stage_replan_tolerance_mm": float(linear_stage_replan_tolerance_mm),
         "final_qc_tolerance": float(final_qc_tolerance),
         "final_OPD_tolerance": float(final_OPD_tolerance),
         "require_final_qc": bool(require_final_qc),
@@ -2744,7 +2889,8 @@ def execute_OPD_fixed_plan(
 
     log(
         f"done success={final_success} OPD_error={final_OPD_error:.3f} "
-        f"final_qc_x=({final_qc['x'][0]:.3f},{final_qc['x'][1]:.3f})"
+        f"final_qc_x=({final_qc['x'][0]:.3f},{final_qc['x'][1]:.3f}) "
+        f"failure={execution['failure_reason']}"
     )
 
     return final_mirrors, final_res, execution
@@ -2760,8 +2906,8 @@ def execute_reflection_count_fixed_plan(
         *,
         actuator_map=None,
         rotation_calibration=None,
-        center_n_tries=2000,
-        angle_perturb=0.3,
+        center_n_tries=4000,
+        angle_perturb=1.5,
         seed=0,
         u_min=0.1,
         u_max=0.9,
@@ -2785,6 +2931,18 @@ def execute_reflection_count_fixed_plan(
         forced_stage_samples=41,
         forced_stage_free_angle_regularization=0.02,
         forced_stage_max_nfev=160,
+        surface_stage_active_actuators=("M1.dangle", "M2.dangle", "M3.dangle"),
+        surface_stage_sweep_actuator="M4.dangle",
+        surface_stage_distance_metric="active_3d",
+        surface_stage_qc_tolerance=0.05,
+        surface_stage_path_qc_limit=2.0,
+        surface_stage_sweep_half_span_deg=None,
+        surface_stage_sweep_step_deg=0.05,
+        surface_stage_sweep_refinement_levels=8,
+        surface_stage_preferred_axis=None,
+        surface_stage_line_max_steps_per_side=400,
+        surface_stage_line_step_deg=0.1,
+        surface_stage_projection_refinement_samples=3,
         target_center_after_jump=True,
         target_center_u_min=None,
         target_center_u_max=None,
@@ -2847,6 +3005,7 @@ def execute_reflection_count_fixed_plan(
     reacquisition_strategy = str(reacquisition_strategy)
     valid_reacquisition_strategies = {
         "forced_stage_one_axis",
+        "surface_stage_then_refresh",
         "staged_one_axis",
         "direct_scan",
     }
@@ -2869,6 +3028,11 @@ def execute_reflection_count_fixed_plan(
             "stage_jump_scan",
             "target_center_solve",
             "target_center_path",
+            "target_solve",
+            "source_line_trace",
+            "source_sweep_trace",
+            "projection",
+            "candidate_validation",
         )
         parts = []
         for key in preferred:
@@ -2896,6 +3060,45 @@ def execute_reflection_count_fixed_plan(
             actuation_plan_plan.setdefault("stage_plan", None)
             actuation_plan_plan.setdefault("target_jump_step", None)
             return mirrors_target_plan, planner_res_plan, actuation_plan_plan
+
+        if reacquisition_strategy == "surface_stage_then_refresh":
+            return S.plan_reflection_count_surface_stage(
+                *mirrors,
+                target_N_R=target_N_R,
+                active_actuators=surface_stage_active_actuators,
+                sweep_actuator=surface_stage_sweep_actuator,
+                distance_metric=surface_stage_distance_metric,
+                stage_qc_tolerance=surface_stage_qc_tolerance,
+                stage_path_qc_limit=surface_stage_path_qc_limit,
+                sweep_half_span_deg=(
+                    reacquire_angle_scan_limit
+                    if surface_stage_sweep_half_span_deg is None
+                    else surface_stage_sweep_half_span_deg
+                ),
+                sweep_step_deg=surface_stage_sweep_step_deg,
+                sweep_refinement_levels=surface_stage_sweep_refinement_levels,
+                preferred_axis=surface_stage_preferred_axis,
+                line_max_steps_per_side=surface_stage_line_max_steps_per_side,
+                line_step_deg=surface_stage_line_step_deg,
+                u_min=u_min,
+                u_max=u_max,
+                center_n_tries=center_n_tries,
+                center_angle_perturb=angle_perturb,
+                center_seed=seed,
+                center_u_min=target_center_u_min,
+                center_u_max=target_center_u_max,
+                center_sigma_edge=sigma_edge,
+                center_final_qc_tolerance=final_qc_tolerance,
+                center_enforce_final_u_bounds=True,
+                center_final_u_tolerance=1e-9,
+                sigma_edge=sigma_edge,
+                projection_refinement_samples=surface_stage_projection_refinement_samples,
+                stage_max_axis_splits=final_center_max_axis_splits,
+                stage_waypoint_depth=final_center_waypoint_depth,
+                stage_motion_samples_per_step=15,
+                stage_fast_motion_samples_per_step=5,
+                profile_callback=(lambda msg: log("planner " + msg)),
+            )
 
         stage_search_mode = (
             "forced"
@@ -2934,8 +3137,10 @@ def execute_reflection_count_fixed_plan(
         "forced_stage_one_axis",
         "staged_one_axis",
     }
+    surface_stage_then_refresh_strategy = reacquisition_strategy == "surface_stage_then_refresh"
+    preflight_strategy = staged_qc_only_strategy or surface_stage_then_refresh_strategy
 
-    if calibrate_before and staged_qc_only_strategy:
+    if calibrate_before and preflight_strategy:
         try:
             _, preflight_res, preflight_plan = plan_reacquisition_from(base_mirrors)
             preflight_failure_reason = preflight_plan.get("failure_reason")
@@ -2950,6 +3155,7 @@ def execute_reflection_count_fixed_plan(
                 "reacquisition_strategy": reacquisition_strategy,
                 "requires_inverse_refresh": False,
                 "qc_only_reacquire_stop": staged_qc_only_strategy,
+                "stage_only_refresh": surface_stage_then_refresh_strategy,
                 "stage_plan": None,
                 "target_jump_step": None,
                 "failure_reason": str(exc),
@@ -2974,6 +3180,9 @@ def execute_reflection_count_fixed_plan(
                 "reacquisition_strategy": reacquisition_strategy,
                 "requires_inverse_refresh": False,
                 "suggested_next_step": None,
+                "stage_only_refresh": surface_stage_then_refresh_strategy,
+                "stage_reached": False,
+                "target_N_R_reached": False,
                 "calibration_result": None,
                 "actuation_plan": preflight_plan,
                 "planner_result": preflight_res,
@@ -3058,6 +3267,7 @@ def execute_reflection_count_fixed_plan(
             "reacquisition_strategy": reacquisition_strategy,
             "requires_inverse_refresh": False,
             "qc_only_reacquire_stop": staged_qc_only_strategy,
+            "stage_only_refresh": surface_stage_then_refresh_strategy,
             "stage_plan": None,
             "target_jump_step": None,
             "failure_reason": str(exc),
@@ -3070,7 +3280,9 @@ def execute_reflection_count_fixed_plan(
         failure_reason = "Planner failed: " + planner_failure_reason
     elif len(steps) == 0:
         start_reflections = S.get_reflection_count(*base_mirrors)
-        if start_reflections != int(target_N_R):
+        if surface_stage_then_refresh_strategy:
+            failure_reason = None
+        elif start_reflections != int(target_N_R):
             failure_reason = "Planner returned no rotation steps."
 
     log(
@@ -3432,6 +3644,12 @@ def execute_reflection_count_fixed_plan(
                     entry["reacquisition_assimilation_error"] = str(exc)
             break
 
+    stage_only_refresh = bool(actuation_plan.get("stage_only_refresh", False))
+    if failure_reason is None and stage_only_refresh:
+        requires_inverse_refresh = True
+        if last_reacquired_by is None:
+            last_reacquired_by = "surface_stage_qc_centered"
+
     if failure_reason is None:
         current_qc = (
             reacquired_qc if reacquired_qc is not None
@@ -3450,6 +3668,7 @@ def execute_reflection_count_fixed_plan(
             current_qc["valid"] and
             float(np.max(np.abs(current_qc["x"]))) <= float(qc_reacquire_limit) and
             (
+                stage_only_refresh or
                 not require_beam_departure_before_reacquire or
                 beam_departed_reacquire_window
             ) and
@@ -3460,7 +3679,10 @@ def execute_reflection_count_fixed_plan(
             )
         )
         if not beam_reacquired_now:
-            if require_beam_departure_before_reacquire and not beam_departed_reacquire_window:
+            if (
+                    not stage_only_refresh and
+                    require_beam_departure_before_reacquire and
+                    not beam_departed_reacquire_window):
                 failure_reason = (
                     "beam_not_reacquired: beam never left the "
                     f"+/-{qc_reacquire_limit} mm reacquisition window."
@@ -3868,6 +4090,12 @@ def execute_reflection_count_fixed_plan(
         final_qc_max_abs <= float(qc_reacquire_limit)
     )
     target_reflection_sim_reached = int(final_sim_reflections) == int(target_N_R)
+    stage_reached = bool(
+        stage_only_refresh and
+        int(final_sim_reflections) == int(actuation_plan.get("stage_reflections", final_sim_reflections)) and
+        final_qc["valid"] and
+        final_qc_max_abs <= float(qc_reacquire_limit)
+    )
 
     if failure_reason is None and not beam_reacquired:
         if not final_qc["valid"]:
@@ -3895,7 +4123,12 @@ def execute_reflection_count_fixed_plan(
 
     final_success = failure_reason is None
     final_res.success = bool(final_success)
-    if final_success and requires_inverse_refresh:
+    if final_success and stage_only_refresh:
+        final_res.message = (
+            "Surface staging point reached; inverse refresh required before "
+            "the target reflection-count jump."
+        )
+    elif final_success and requires_inverse_refresh:
         final_res.message = (
             "Reflection-count execution reacquired QC signal; inverse refresh required."
         )
@@ -3913,6 +4146,9 @@ def execute_reflection_count_fixed_plan(
         "qc_path_unconstrained": True,
         "target_N_R": int(target_N_R),
         "reacquisition_strategy": reacquisition_strategy,
+        "stage_only_refresh": bool(stage_only_refresh),
+        "stage_reached": bool(stage_reached and final_success),
+        "target_N_R_reached": bool(target_reflection_sim_reached),
         "stage_plan": actuation_plan.get("stage_plan"),
         "target_jump_step": actuation_plan.get("target_jump_step"),
         "target_center_after_jump": bool(target_center_after_jump),
@@ -3923,7 +4159,10 @@ def execute_reflection_count_fixed_plan(
         "target_center_plan": actuation_plan.get("target_center_plan"),
         "requires_inverse_refresh": bool(requires_inverse_refresh),
         "suggested_next_step": (
-            "take light/dark images and run optimize_inverse"
+            actuation_plan.get(
+                "suggested_next_step",
+                "take light/dark images and run optimize_inverse"
+            )
             if requires_inverse_refresh else None
         ),
         "reacquired_by": last_reacquired_by,
@@ -4010,6 +4249,21 @@ def execute_reflection_count_fixed_plan(
         "forced_stage_samples": int(forced_stage_samples),
         "forced_stage_free_angle_regularization": float(forced_stage_free_angle_regularization),
         "forced_stage_max_nfev": int(forced_stage_max_nfev),
+        "surface_stage_active_actuators": list(surface_stage_active_actuators),
+        "surface_stage_sweep_actuator": surface_stage_sweep_actuator,
+        "surface_stage_distance_metric": surface_stage_distance_metric,
+        "surface_stage_qc_tolerance": float(surface_stage_qc_tolerance),
+        "surface_stage_path_qc_limit": float(surface_stage_path_qc_limit),
+        "surface_stage_sweep_half_span_deg": (
+            None if surface_stage_sweep_half_span_deg is None
+            else float(surface_stage_sweep_half_span_deg)
+        ),
+        "surface_stage_sweep_step_deg": float(surface_stage_sweep_step_deg),
+        "surface_stage_sweep_refinement_levels": int(surface_stage_sweep_refinement_levels),
+        "surface_stage_preferred_axis": surface_stage_preferred_axis,
+        "surface_stage_line_max_steps_per_side": int(surface_stage_line_max_steps_per_side),
+        "surface_stage_line_step_deg": float(surface_stage_line_step_deg),
+        "surface_stage_projection_refinement_samples": int(surface_stage_projection_refinement_samples),
         "target_center_after_jump": bool(target_center_after_jump),
         "target_center_u_min": (
             None if target_center_u_min is None else float(target_center_u_min)
@@ -4706,6 +4960,16 @@ def solve_and_trace_centered_quadcell_angle_curve(M1, M2, M3, M4, **kwargs):
     return S.solve_and_trace_centered_quadcell_angle_curve(M1, M2, M3, M4, **kwargs)
 
 
+def correct_centered_quadcell_angles(M1, M2, M3, M4, **kwargs):
+    """Run the local fixed-actuator QC-centering corrector used by curve tracing."""
+    return S.correct_centered_quadcell_angles(M1, M2, M3, M4, **kwargs)
+
+
+def search_centered_quadcell_angles(M1, M2, M3, M4, **kwargs):
+    """Try multiple local QC-centering starts at fixed inactive actuators."""
+    return S.search_centered_quadcell_angles(M1, M2, M3, M4, **kwargs)
+
+
 def trace_centered_quadcell_angle_surface(M1, M2, M3, M4, **kwargs):
     """Trace a centered-QC surface as fixed-actuator curve slices."""
     return S.trace_centered_quadcell_angle_surface(M1, M2, M3, M4, **kwargs)
@@ -4714,6 +4978,31 @@ def trace_centered_quadcell_angle_surface(M1, M2, M3, M4, **kwargs):
 def solve_and_trace_centered_quadcell_angle_surface(M1, M2, M3, M4, **kwargs):
     """Find a centered fixed-N_R config, then trace a centered-QC surface."""
     return S.solve_and_trace_centered_quadcell_angle_surface(M1, M2, M3, M4, **kwargs)
+
+
+def reflection_count_targets_up_to(M1, M2, M3, M4, max_N_R, **kwargs):
+    """Return reflection counts from current/start count up to max_N_R."""
+    return S.reflection_count_targets_up_to(M1, M2, M3, M4, max_N_R, **kwargs)
+
+
+def relaxed_u_accept_bounds_for_step(u_min, u_max, step_index, divisor=2.0):
+    """Relax edge margins toward [0, 1] by divisor**step_index."""
+    return S.relaxed_u_accept_bounds_for_step(u_min, u_max, step_index, divisor=divisor)
+
+
+def trace_reflection_count_surface_family(M1, M2, M3, M4, **kwargs):
+    """Trace centered-QC surfaces for a sequence of reflection counts."""
+    return S.trace_reflection_count_surface_family(M1, M2, M3, M4, **kwargs)
+
+
+def plan_reflection_count_surface_stage(M1, M2, M3, M4, **kwargs):
+    """Plan a same-N_R centered staging move before an inverse refresh."""
+    return S.plan_reflection_count_surface_stage(M1, M2, M3, M4, **kwargs)
+
+
+def summarize_reflection_count_surface_family(family):
+    """Return one status row per requested reflection-count surface."""
+    return S.summarize_reflection_count_surface_family(family)
 
 
 def find_nearest_surface_curve_by_projection(reference_surface, target_surface, **kwargs):
@@ -4742,6 +5031,11 @@ def scan_one_actuator_target_cloud_from_surface(surface, target_reflections, **k
         target_reflections,
         **kwargs,
     )
+
+
+def sample_reflection_count_surface_family_tubes(family, **kwargs):
+    """Sample QC-tolerance tubes around closest adjacent family curves."""
+    return S.sample_reflection_count_surface_family_tubes(family, **kwargs)
 
 
 def find_nearest_surface_cloud_point_by_projection(reference_surface, target_cloud, **kwargs):
@@ -4796,6 +5090,7 @@ def plot_centered_quadcell_angle_surface_3d(surface, label=None, axes=None,
                                             height=650, renderer=None, title=None,
                                             opacity=0.9, show_start_markers=False,
                                             show_reference_markers=True,
+                                            show_empty_surface_reference_markers=True,
                                             reference_marker_size=9,
                                             axis_ranges=None,
                                             clouds=None,
@@ -4820,6 +5115,7 @@ def plot_centered_quadcell_angle_surface_3d(surface, label=None, axes=None,
         opacity=opacity,
         show_start_markers=show_start_markers,
         show_reference_markers=show_reference_markers,
+        show_empty_surface_reference_markers=show_empty_surface_reference_markers,
         reference_marker_size=reference_marker_size,
         axis_ranges=axis_ranges,
         clouds=clouds,
@@ -4838,6 +5134,7 @@ def plot_centered_quadcell_angle_surfaces_3d(surfaces, labels=None, axes=None,
                                              height=650, renderer=None, title=None,
                                              opacity=0.9, show_start_markers=False,
                                              show_reference_markers=True,
+                                             show_empty_surface_reference_markers=True,
                                              reference_marker_size=9,
                                              axis_ranges=None,
                                              clouds=None,
@@ -4862,6 +5159,7 @@ def plot_centered_quadcell_angle_surfaces_3d(surfaces, labels=None, axes=None,
         opacity=opacity,
         show_start_markers=show_start_markers,
         show_reference_markers=show_reference_markers,
+        show_empty_surface_reference_markers=show_empty_surface_reference_markers,
         reference_marker_size=reference_marker_size,
         axis_ranges=axis_ranges,
         clouds=clouds,
@@ -4873,6 +5171,16 @@ def plot_centered_quadcell_angle_surfaces_3d(surfaces, labels=None, axes=None,
         tube_opacity=tube_opacity,
         tube_color=tube_color,
     )
+
+
+def plot_reflection_count_surface_family_3d(family, **kwargs):
+    """Interactive 3D plot of a reflection-count surface family."""
+    return S.plot_reflection_count_surface_family_3d(family, **kwargs)
+
+
+def plot_reflection_count_surface_stage_plan_3d(plan, **kwargs):
+    """Interactive 3D plot of a same-N_R surface staging plan."""
+    return S.plot_reflection_count_surface_stage_plan_3d(plan, **kwargs)
 
 
 def plot_centered_quadcell_curve_diagnostics(curve):
@@ -4902,6 +5210,7 @@ def run_closed_loop_dry_run_trials(
         qc_detector_limit=3.9,
         qc_plan_limit=1.5,
         qc_hardware_stop=3.5,
+        linear_stage_guard_mm=DEFAULT_LINEAR_STAGE_GUARD_MM,
         profile=False,
         **execute_kwargs):
     """Run repeated closed-loop dry-runs with randomized rotation step error."""
@@ -4921,6 +5230,7 @@ def run_closed_loop_dry_run_trials(
             qc_detector_limit=qc_detector_limit,
             qc_plan_limit=qc_plan_limit,
             qc_hardware_stop=qc_hardware_stop,
+            linear_stage_guard_mm=linear_stage_guard_mm,
             profile=profile,
             **execute_kwargs,
         )
@@ -4948,6 +5258,7 @@ def run_closed_loop_dry_run_trials(
         "qc_detector_limit": float(qc_detector_limit),
         "qc_plan_limit": float(qc_plan_limit),
         "qc_hardware_stop": float(qc_hardware_stop),
+        "linear_stage_guard_mm": float(linear_stage_guard_mm),
         "final_qc_tolerance": float(final_qc_tolerance),
         "final_OPD_relaxed_tolerance": float(final_OPD_relaxed_tolerance),
         "dry_run_rotation_error": float(dry_run_rotation_error),
