@@ -79,6 +79,8 @@ DEFAULT_ROTATION_CALIBRATION = {
 
 
 def _merged_actuator_map(actuator_map):
+    '''Merges the default actuator map with any other iput map parameters'''
+
     merged = {
         label: dict(config)
         for label, config in DEFAULT_ACTUATOR_MAP.items()
@@ -92,6 +94,8 @@ def _merged_actuator_map(actuator_map):
 
 
 def _normalized_rotation_calibration(rotation_calibration):
+    '''Get the degree per substep values for each actuator, overwriting the default value for the passed in actuator values'''
+
     normalized = dict(DEFAULT_ROTATION_CALIBRATION)
     if rotation_calibration:
         for label, value in rotation_calibration.items():
@@ -102,6 +106,7 @@ def _normalized_rotation_calibration(rotation_calibration):
 
 
 def _x_to_mirrors(x, base_mirrors):
+    '''S.unpack_variables(x, *base_mirrors)'''
     return S.unpack_variables(x, *base_mirrors)
 
 
@@ -110,16 +115,19 @@ def _mirrors_to_lists(mirrors):
 
 
 def _quadcell_readout_from_sim_qc(sim_qc, qc_readout_sign):
+    '''Get what the quadcell readout should be from simulation quadcell error values'''
     if qc_readout_sign == 0:
         raise ValueError("qc_readout_sign must be nonzero.")
     return np.asarray(sim_qc, dtype=float) / float(qc_readout_sign)
 
 
 def _sim_qc_from_quadcell_readout(qc_readout, qc_readout_sign):
+    ''' Convert pyhsical quadcell readout to simulation quadcell error value'''
     return float(qc_readout_sign) * np.asarray(qc_readout, dtype=float)
 
 
 def _planned_step_qc_readout(step, qc_readout_sign):
+    '''Get what the quadcell readout should be at the end of the specified step'''
     sim_qc = np.array([step["qc1_error"], step["qc2_error"]], dtype=float)
     return _quadcell_readout_from_sim_qc(sim_qc, qc_readout_sign)
 
@@ -263,6 +271,8 @@ def _initial_linear_stage_locs(
         M2_linear_loc=None,
         M3_linear_loc=None,
         dry_run=False):
+    '''Read any unknown linear stage positions, or just assume at midpoint if not able to'''
+    
     provided = {
         "M1": M1_linear_loc,
         "M2": M2_linear_loc,
@@ -307,6 +317,8 @@ def assimilate_rotation_angle_from_qc(
         qc_fit_scale=0.1,
         prior_sigma=None):
     """Fit one simulated rotation angle to measured quadcell Y readouts."""
+
+    # Get current state (estimation) and associated error
     x_current = np.array(x_current, dtype=float)
     measured_qc_y = np.array(measured_qc_y, dtype=float)
     target_sim_qc = _sim_qc_from_quadcell_readout(measured_qc_y, qc_readout_sign)
@@ -314,21 +326,26 @@ def assimilate_rotation_angle_from_qc(
     if axis_index is None:
         raise ValueError("axis_index is required for rotation assimilation.")
 
+    # Get starting angle (what we're initially assuming the angle is)
     if angle_prior is None:
         angle_prior = x_current[axis_index]
     angle_prior = float(angle_prior)
 
+    # Determine how far from the starting angle the final angle found can be
     if angle_window is None:
         angle_window = max(0.05, abs(angle_prior - x_current[axis_index]) * 2.0 + 0.02)
     angle_window = float(abs(angle_window))
 
+    # Normalization factor when calculating residuals
     if prior_sigma is None:
         prior_sigma = max(0.02, angle_window / 2.0)
 
+    # Bounds on acceptable final angle
     lower = angle_prior - angle_window
     upper = angle_prior + angle_window
 
     def residuals(theta):
+        '''Determines residuas for a given rotation angle (includes quadcell errors, and angle offset from starting angle)'''
         x_trial = x_current.copy()
         x_trial[axis_index] = theta[0]
         sim_qc = np.array(
@@ -340,18 +357,22 @@ def assimilate_rotation_angle_from_qc(
             res.append((theta[0] - angle_prior) / float(prior_sigma))
         return np.array(res, dtype=float)
 
+    # Optimize to find the angle that provides quadcell errors closest to the recorded quadcell reading
     res = least_squares(
         residuals,
         x0=np.array([angle_prior], dtype=float),
         bounds=(np.array([lower]), np.array([upper])),
     )
 
+    # Get the result and caluclate the corresponding quadcell simulation errors
     x_fit = x_current.copy()
     x_fit[axis_index] = res.x[0]
     sim_qc_fit = np.array(
         S.quadcell_errors_from_variables(x_fit, M1, M2, M3, M4),
         dtype=float
     )
+
+    # Determine how far off this got us from the target error values
     fit_error = sim_qc_fit - target_sim_qc
 
     return x_fit, {
@@ -376,12 +397,16 @@ def _update_rotation_calibration(
         *,
         update_rate=0.2,
         clip_fraction=0.2):
+    '''Update degree per substep calibration based on weighted average of default and bserved calibration data'''
+
     if commanded_substeps == 0:
         return calibration.get(actuator_label, DEFAULT_ROTATION_DEGREES_PER_SUBSTEP)
 
+    # Calculate actual degree/substep observed in latest step
     observed = abs(float(actual_angle_delta)) / abs(int(commanded_substeps))
     if not np.isfinite(observed) or observed <= 0:
         return calibration.get(actuator_label, DEFAULT_ROTATION_DEGREES_PER_SUBSTEP)
+
 
     old = calibration.get(actuator_label, DEFAULT_ROTATION_DEGREES_PER_SUBSTEP)
     lower = old * (1.0 - clip_fraction)
@@ -1104,6 +1129,9 @@ def _execute_linear_step(
         *,
         dry_run,
         linear_settle_delay):
+    '''Execute a linear stage movement described by the passed in step. Updates x_model with
+    the actual step made, and x_physical (only if doing a dry run). Returns details about the move'''
+
     axis_index = step["axis_index"]
     command_value = float(step["command_value"])
     direction = float(mapping.get("direction", 1.0))
@@ -1118,24 +1146,37 @@ def _execute_linear_step(
     actual_sim_delta = command_value
 
     if dry_run:
+        # If doing a dry run, assume it works perfectly according to simulation
         if before_sim_position is None:
             before_sim_position = 0.0
         after_sim_position = before_sim_position + command_value
         x_physical[axis_index] += command_value
     else:
+        # Not a dry run, actually moving the actuator
         if hardware is None or getattr(hardware, "stages", None) is None:
             raise ValueError("hardware.stages is required to execute linear moves.")
+
+        # Get the actuator's starting position
         before_hardware_position = float(hardware.stages.get_position(serial))
         if before_sim_position is None:
             before_sim_position = direction * before_hardware_position
+
+        # Move the actuator along specified step
         hardware.stages.move_relative(serial, hardware_delta)
+
+        # Wait until movement is done and everything is settled
         if linear_settle_delay and linear_settle_delay > 0:
             time.sleep(linear_settle_delay)
+
+        # Read where the actuator is now, and determine how much it actually moved (vs how much it was supposed to)
         after_hardware_position = float(hardware.stages.get_position(serial))
         actual_hardware_delta = after_hardware_position - before_hardware_position
+
+        # Update the simulation posiion with the actual step made
         actual_sim_delta = actual_hardware_delta / direction
         after_sim_position = before_sim_position + actual_sim_delta
 
+    # Update with the actual step size that occurred
     x_model[axis_index] += actual_sim_delta
     linear_stage_locs[mirror_name] = after_sim_position
 
@@ -1188,9 +1229,16 @@ def _execute_rotation_step(
         actuator_label,
         DEFAULT_ROTATION_DEGREES_PER_SUBSTEP
     )
+    '''Performs the described rotation step. Rotates the specified actuator in 'chunks' of
+    substeps, checking the quadcells' readout after each chunk. Once we've reached the target
+    quadcell readout, stop rotating. After the rotation is done, determines if the main path
+    loop should calculate a new path to go off of (based on erorr margins, if any failures
+    occurred, of if we didn't actually reach the target quadcell readout'''
+
     if degrees_per_substep <= 0:
         raise ValueError(f"degrees_per_substep must be positive for {actuator_label}.")
 
+    # Set up variables
     controller = mapping.get("controller", DEFAULT_ROTATION_CONTROLLER)
     actuator = int(mapping["actuator"])
     hardware_direction = int(np.sign(mapping.get("direction", 1)) or 1)
@@ -1210,6 +1258,7 @@ def _execute_rotation_step(
         max(float(min_qc_step_tolerance), 0.5 * max(0.0, target_qc_margin))
     )
 
+    # Getquadcell readout before step
     before_qc = _read_quadcell_y(
         hardware,
         times=fast_qc_avg,
@@ -1221,6 +1270,8 @@ def _execute_rotation_step(
     )
     current_y = before_qc["y"]
     start_y = current_y.copy()
+
+    # Determine how far to get to desired quadcell readout
     target_delta = target_qc_y - start_y
     target_norm = float(np.linalg.norm(target_delta))
     best_distance = float(np.linalg.norm(target_qc_y - current_y))
@@ -1230,10 +1281,13 @@ def _execute_rotation_step(
     total_sim_substeps = 0
     chunk_logs = []
 
+    # Esimate how many substeps are required
     predicted_total_substeps = max(
         abs(planned_angle_delta) / degrees_per_substep,
         float(min_rotation_chunk_substeps)
     )
+
+    # Determine how many chunks of substeps are quired
     base_chunk = int(np.ceil(predicted_total_substeps / 5.0))
     base_chunk = int(np.clip(
         base_chunk,
@@ -1249,21 +1303,26 @@ def _execute_rotation_step(
         if stop_reason is not None:
             break
 
+        # Determine how much farther needs to be traveled
         remaining_distance = float(np.linalg.norm(target_qc_y - current_y))
         if remaining_distance <= effective_qc_step_tolerance:
+            # If we're at the target, stop
             stop_reason = "reached_qc_step_tolerance"
             break
 
+        # Determine how much progress since starting has been made
         if target_norm > 1e-12:
             progress = float(np.dot(current_y - start_y, target_delta) / np.dot(target_delta, target_delta))
         else:
             progress = 1.0
 
+        # Determine simulation quadcell error values
         scale = 1.0
         current_sim_qc = _sim_qc_from_quadcell_readout(current_y, qc_readout_sign)
         current_qc_margin = max_qc_error - float(np.max(np.abs(current_sim_qc)))
         current_plan_margin = qc_plan_limit - float(np.max(np.abs(current_sim_qc)))
 
+        # Scale chunk size based on how much progress has been made
         if (
             progress > 0.75 or
             remaining_distance < 2.0 * effective_qc_step_tolerance or
@@ -1278,11 +1337,12 @@ def _execute_rotation_step(
             (not target_is_recovery and current_plan_margin < 0.5 * qc_safety_margin)
         ):
             scale = 0.25
-
         chunk_substeps = max(
             int(min_rotation_chunk_substeps),
             int(np.ceil(base_chunk * scale))
         )
+
+        # If we're too close to the edge of quadcell bounds, only step minimum chunk substeps
         if current_qc_margin < 2.0 * qc_safety_margin or (
             not target_is_recovery and current_plan_margin < 2.0 * qc_safety_margin
         ):
@@ -1291,6 +1351,7 @@ def _execute_rotation_step(
         hardware_steps = hardware_direction * sim_steps
         x_physical_before_chunk = x_physical.copy()
 
+        # Do the chunk step (update simluation, or make actuator move)
         if dry_run:
             error_factor = 1.0 + rng.uniform(-dry_run_rotation_error, dry_run_rotation_error)
             x_physical[axis_index] += sim_steps * degrees_per_substep * error_factor
@@ -1299,8 +1360,11 @@ def _execute_rotation_step(
                 raise ValueError("hardware.rotation_stages is required to execute rotation moves.")
             hardware.rotation_stages.move_relative_steps(controller, actuator, hardware_steps)
 
+        # Increment total step counter
         total_commanded_substeps += hardware_steps
         total_sim_substeps += sim_steps
+
+        # Get quadcell reading after chunk step occurred
         after_qc = _read_quadcell_y(
             hardware,
             times=fast_qc_avg,
@@ -1311,15 +1375,20 @@ def _execute_rotation_step(
             qc_readout_sign=qc_readout_sign,
         )
         current_y = after_qc["y"]
+
+        # Determine simulation quadcell error, and how much margin we have
         current_sim_qc = _sim_qc_from_quadcell_readout(current_y, qc_readout_sign)
         current_qc_margin = max_qc_error - float(np.max(np.abs(current_sim_qc)))
         current_plan_margin = qc_plan_limit - float(np.max(np.abs(current_sim_qc)))
         distance = float(np.linalg.norm(target_qc_y - current_y))
+
+        # If we're not at the target, determine how much progress we've made now
         if target_norm > 1e-12:
             progress = float(np.dot(current_y - start_y, target_delta) / np.dot(target_delta, target_delta))
         else:
             progress = 1.0
 
+        # Check if we made positioe progress on the latest chunk step
         improved = distance < best_distance
         if improved:
             best_distance = distance
@@ -1328,6 +1397,7 @@ def _execute_rotation_step(
         else:
             chunks_without_improvement += 1
 
+        # Log info about the chunk step
         chunk_logs.append({
             "chunk": chunk_index,
             "hardware_steps": hardware_steps,
@@ -1338,13 +1408,20 @@ def _execute_rotation_step(
             "improved": bool(improved),
         })
 
+        # One of the quadcells has gone outside of acceptable bounds
         if current_qc_margin <= 0.0:
             if dry_run:
+                # If doing a dry run, just revert back to before the latest chunk step
                 x_physical[:] = x_physical_before_chunk
             else:
+                # If not doing dry run, move actuator backwards equal number of steps
                 hardware.rotation_stages.move_relative_steps(controller, actuator, -hardware_steps)
+
+            # Revert counters back to previous values
             total_commanded_substeps -= hardware_steps
             total_sim_substeps -= sim_steps
+
+            # Get quadcell readouts at rolled back state
             rollback_qc = _read_quadcell_y(
                 hardware,
                 times=fast_qc_avg,
@@ -1355,6 +1432,8 @@ def _execute_rotation_step(
                 qc_readout_sign=qc_readout_sign,
             )
             current_y = rollback_qc["y"]
+
+            # Recalculate progress for rolled back state, then break out of the movement loop
             current_sim_qc = _sim_qc_from_quadcell_readout(current_y, qc_readout_sign)
             current_qc_margin = max_qc_error - float(np.max(np.abs(current_sim_qc)))
             distance = float(np.linalg.norm(target_qc_y - current_y))
@@ -1373,29 +1452,39 @@ def _execute_rotation_step(
             stop_reason = "qc_bound_rollback"
             break
         if distance <= effective_qc_step_tolerance:
+            # If close enough to target, stop
             stop_reason = "reached_qc_step_tolerance"
             break
         if current_qc_margin < qc_safety_margin:
+            # If too close to edge of qc bounds, stop
             stop_reason = "near_qc_bound"
             break
         if not target_is_recovery and current_plan_margin < 0.0:
+            # Wasn't able to recover (still outside margin), stop
             stop_reason = "outside_qc_plan_limit"
             break
         if progress >= 1.0 and not improved:
+            # Went too far, stop
             stop_reason = "overshot_or_past_target"
             break
         if chunks_without_improvement >= 3:
+            # Haven't made prgress lately, stop
             stop_reason = "stalled_without_improvement"
             break
 
+    # If we don't have a stop reason, then the loop finished naturally (hit max number of substeps)
     if stop_reason is None:
         stop_reason = "max_rotation_chunks_reached"
 
+    # Guess what angle we moved, and update the current state
     expected_angle_delta = total_sim_substeps * degrees_per_substep
     angle_prior = x_model[axis_index] + expected_angle_delta
     angle_window = max(0.05, abs(expected_angle_delta) * 2.0 + 0.02)
 
+    # Save current state before assimilation
     x_before_assimilation = x_model.copy()
+
+    # Use optimization to get the actual state of the moved actuator, given current quadcell readings
     x_fit, assimilation = assimilate_rotation_angle_from_qc(
         x_model,
         axis_index,
@@ -1407,6 +1496,7 @@ def _execute_rotation_step(
     )
     x_model[:] = x_fit
 
+    # Determine how much we actually moved, and use that to update the rotation's calibration
     actual_angle_delta = x_model[axis_index] - x_before_assimilation[axis_index]
     updated_calibration = _update_rotation_calibration(
         rotation_calibration,
@@ -1417,9 +1507,12 @@ def _execute_rotation_step(
         clip_fraction=calibration_clip_fraction,
     )
 
+    # Determine final metrics after the step is done
     after_distance = float(np.linalg.norm(target_qc_y - best_y))
     final_sim_qc = _sim_qc_from_quadcell_readout(best_y, qc_readout_sign)
     final_qc_margin = max_qc_error - float(np.max(np.abs(final_sim_qc)))
+
+    # Determine whether a new step path should be found after having done this step
     replan_recommended = (
         after_distance > qc_replan_tolerance or
         final_qc_margin < qc_safety_margin or
@@ -1485,6 +1578,11 @@ def _execute_rotation_step_fixed(
         max_rotation_chunk_substeps,
         min_rotation_chunk_substeps,
         rotation_settle_delay):
+    '''Performs the described rotation step. Rotates the specified actuator in 'chunks' of
+    substeps, checking the quadcells' readout after each chunk. Once we've reached the target
+    quadcell readout, stop rotating'''
+
+    # Determine which actuator is moving, and by how much
     actuator_label = step["actuator"]
     axis_index = step["axis_index"]
     planned_angle_delta = float(step["command_value"])
@@ -1499,8 +1597,11 @@ def _execute_rotation_step_fixed(
     actuator = int(mapping["actuator"])
     hardware_direction = int(np.sign(mapping.get("direction", 1)) or 1)
     angle_direction = int(np.sign(planned_angle_delta) or 1)
+
+    # Determine the target quadcell readout for the end of the step
     target_qc_y = _planned_step_qc_readout(step, qc_readout_sign)
 
+    # Get starting quadcell readout
     before_qc = _read_quadcell_y(
         hardware,
         times=fast_qc_avg,
@@ -1510,22 +1611,28 @@ def _execute_rotation_step_fixed(
         base_mirrors=base_mirrors,
         qc_readout_sign=qc_readout_sign,
     )
+
     current_y = before_qc["y"]
     start_y = current_y.copy()
     target_delta = target_qc_y - start_y
     target_norm = float(np.dot(target_delta, target_delta))
     best_distance = float(np.linalg.norm(target_qc_y - current_y))
     best_y = current_y.copy()
+
+    # Counters
     chunks_without_improvement = 0
     total_commanded_substeps = 0
     total_sim_substeps = 0
     chunk_logs = []
     rollback_count = 0
 
+    # Estimate how many rotation steps will be needed
     predicted_total_substeps = max(
         abs(planned_angle_delta) / degrees_per_substep,
         float(min_rotation_chunk_substeps)
     )
+
+    # Determine how many rotation chunks to perform
     base_chunk = int(np.ceil(predicted_total_substeps / 5.0))
     base_chunk = int(np.clip(
         base_chunk,
@@ -1535,51 +1642,69 @@ def _execute_rotation_step_fixed(
 
     stop_reason = None
     failure_reason = None
+
+    # If we're already within tolerance, don't enter loop
     if best_distance <= qc_step_tolerance:
         stop_reason = "already_within_qc_step_tolerance"
 
+    
     for chunk_index in range(1, max_rotation_chunks_per_step + 1):
+        # Stop moving if we have a reason to
         if stop_reason is not None:
             break
 
+        # Determine the remaining distance to the target, and if we're in tolerance
         remaining_distance = float(np.linalg.norm(target_qc_y - current_y))
         if remaining_distance <= qc_step_tolerance:
             stop_reason = "reached_qc_step_tolerance"
             break
 
+        # If still have some way to go, calulcate how far we've come so far
         progress = 1.0
         if target_norm > 1e-12:
             progress = float(np.dot(current_y - start_y, target_delta) / target_norm)
 
+        # Adjust scale for finer movements near the end
         scale = 1.0
         if progress > 0.75 or remaining_distance < 2.0 * qc_step_tolerance:
             scale = 0.5
         if progress > 0.9 or remaining_distance < qc_step_tolerance:
             scale = 0.25
 
+        # Choose how many substeps are in this chunk
         chunk_substeps = max(
             int(min_rotation_chunk_substeps),
             int(np.ceil(base_chunk * scale))
         )
         sim_steps = angle_direction * chunk_substeps
         hardware_steps = hardware_direction * sim_steps
+
+        # Save state from before performing the chunk
         x_physical_before_chunk = x_physical.copy()
         x_estimate_before_chunk = x_estimate.copy()
 
         if dry_run:
+            # If doing a dry run, augment the actual state with some random amount of error
             error_factor = 1.0 + rng.uniform(-dry_run_rotation_error, dry_run_rotation_error)
             x_physical[axis_index] += sim_steps * degrees_per_substep * error_factor
         else:
+            # If actually moving the actuator, move it
             if hardware is None or getattr(hardware, "rotation_stages", None) is None:
                 raise ValueError("hardware.rotation_stages is required to execute rotation moves.")
             hardware.rotation_stages.move_relative_steps(controller, actuator, hardware_steps)
 
+        # Update the simulation position, assuming no error
         x_estimate[axis_index] += sim_steps * degrees_per_substep
+
+        # Augment total substep counters
         total_commanded_substeps += hardware_steps
         total_sim_substeps += sim_steps
+
+        # Wait for movement to finish settling
         if rotation_settle_delay and rotation_settle_delay > 0:
             time.sleep(rotation_settle_delay)
 
+        # Get current quadcell readings after performing the chunk
         after_qc = _read_quadcell_y(
             hardware,
             times=fast_qc_avg,
@@ -1589,20 +1714,28 @@ def _execute_rotation_step_fixed(
             base_mirrors=base_mirrors,
             qc_readout_sign=qc_readout_sign,
         )
+
+        # Update variables for next time thru the loop
         current_y = after_qc["y"]
         distance = float(np.linalg.norm(target_qc_y - current_y))
+
+        # Check progress
         progress = 1.0
         if target_norm > 1e-12:
             progress = float(np.dot(current_y - start_y, target_delta) / target_norm)
 
+        # Determine if this step put us closer to the target, or farther away
         improved = distance < best_distance
         if improved:
+            # If we've improved, current position is new best
             best_distance = distance
             best_y = current_y.copy()
             chunks_without_improvement = 0
         else:
+            # If no improvement, augment stall out counter
             chunks_without_improvement += 1
 
+        # Log result of the chunk
         chunk_log = {
             "chunk": chunk_index,
             "hardware_steps": int(hardware_steps),
@@ -1614,14 +1747,22 @@ def _execute_rotation_step_fixed(
         }
         chunk_logs.append(chunk_log)
 
+        # Check if the latest chunk has put the either of the quadcells 'out of bounds'
         if float(np.max(np.abs(current_y))) > qc_safety_limit:
+
             if dry_run:
+                # If doing a dry run, just restore physical state to latest state
                 x_physical[:] = x_physical_before_chunk
             else:
+                # If actually moving actuator, perform an equal number of steps in the opposite direction
                 hardware.rotation_stages.move_relative_steps(controller, actuator, -hardware_steps)
+
+            # Revert back to state from before the latest chunk
             x_estimate[:] = x_estimate_before_chunk
             total_commanded_substeps -= hardware_steps
             total_sim_substeps -= sim_steps
+
+            # Augment rollback counter, and read new quadcell position
             rollback_count += 1
             rollback_qc = _read_quadcell_y(
                 hardware,
@@ -1632,6 +1773,8 @@ def _execute_rotation_step_fixed(
                 base_mirrors=base_mirrors,
                 qc_readout_sign=qc_readout_sign,
             )
+
+            # Continue updating variables to new state (ideally state from before latest move)
             current_y = rollback_qc["y"]
             distance = float(np.linalg.norm(target_qc_y - current_y))
             chunk_log["rolled_back"] = True
@@ -1640,22 +1783,30 @@ def _execute_rotation_step_fixed(
             chunk_log["rollback_distance_to_target"] = distance
             best_distance = distance
             best_y = current_y.copy()
+
+            # Break out of the loop
             stop_reason = "qc_safety_rollback"
             failure_reason = (
                 f"Measured QC exceeded +/-{qc_safety_limit} mm during {actuator_label}."
             )
             break
 
+        # If we're close enough to the target, stop
         if distance <= qc_step_tolerance:
             stop_reason = "reached_qc_step_tolerance"
             break
+
+        # If weovershot the target and aren't improving anymore, stop
         if progress >= 1.0 and not improved:
             stop_reason = "overshot_or_past_target"
             break
+
+        # If we've gone a while without improving, stop
         if chunks_without_improvement >= 3:
             stop_reason = "stalled_without_improvement"
             break
 
+    # If no stop reason was given, that means we never broke out early, we just reached the maximum number of chunks
     if stop_reason is None:
         stop_reason = "max_rotation_chunks_reached"
 
@@ -1685,6 +1836,7 @@ def _execute_rotation_step_fixed(
 
 
 def _path_metrics_from_x(x, base_mirrors, include_edge_ends=False):
+    '''Returns a summary of current state (OPD, reflection_count, qc1_error, qc2_error, qc_difference, min_u, max_u, closest_edge_margin)'''
     qc1_error, qc2_error = S.quadcell_errors_from_variables(x, *base_mirrors)
     mirrors = S.unpack_variables(x, *base_mirrors)
     edge_summary = S.reflection_edge_summary(
@@ -1774,6 +1926,7 @@ def execute_OPD_closed_loop(
         line = f"[execute_OPD {time.perf_counter() - t0:.3f}s] {message}"
         profile_sink(line)
 
+    # Set up variables for later
     actuator_map = _merged_actuator_map(actuator_map)
     rotation_calibration = _normalized_rotation_calibration(rotation_calibration)
     rng = np.random.default_rng(rng_seed)
@@ -1783,6 +1936,7 @@ def execute_OPD_closed_loop(
     qc_plan_limit = float(qc_plan_limit)
     final_OPD_acceptance_tolerance = max(float(target_OPD_tolerance), float(final_OPD_relaxed_tolerance))
 
+    # Determine starting state
     base_mirrors = (
         np.array(M1, dtype=float),
         np.array(M2, dtype=float),
@@ -1801,6 +1955,7 @@ def execute_OPD_closed_loop(
         dry_run=dry_run,
     )
 
+    # Initialize variable defaults
     execution_log = []
     planner_runs = []
     failure_reason = None
@@ -1814,7 +1969,9 @@ def execute_OPD_closed_loop(
         f"linear_locs={linear_stage_locs}"
     )
 
+    
     for replan_index in range(1, max_replans + 1):
+        # Get current state
         current_mirrors = _x_to_mirrors(x_model, base_mirrors)
         current_OPD = S.OPD_from_variables(x_model, *base_mirrors)
         log(
@@ -1822,6 +1979,7 @@ def execute_OPD_closed_loop(
             f"OPD={current_OPD:.3f}"
         )
 
+        # Find a path to the target OPD
         planner_profile = []
         planner_kwargs = dict(choose_OPD_kwargs)
         planner_kwargs.setdefault("qc_detector_limit", qc_detector_limit)
@@ -1850,29 +2008,36 @@ def execute_OPD_closed_loop(
             "profile": planner_profile,
         })
 
+        # If no path was found, then break out of the replanning loop (future replans won't accomplish anything)
         if latest_plan.get("failure_reason") is not None:
             failure_reason = "Planner failed: " + latest_plan["failure_reason"]
             log(failure_reason)
             break
 
+        # Get steps in the new plan
         steps = latest_plan.get("steps", [])
         if len(steps) == 0:
             replan_reason = "planner_returned_no_steps"
             break
 
+        
         accepted_this_plan = 0
         replan_reason = None
 
+        # Step through the latest plan
         for step in steps:
+            # If we've done too many steps, break out of this plan
             if total_accepted_steps >= max_total_steps:
                 failure_reason = f"Reached max_total_steps={max_total_steps}."
                 break
 
+            # If we're moving an actuator that doesn't exist, break out of this plan
             actuator_label = step.get("actuator")
             if actuator_label not in actuator_map:
                 failure_reason = f"No hardware mapping for actuator {actuator_label}."
                 break
 
+            # Get starting quadcell readings
             mapping = actuator_map[actuator_label]
             step_t0 = time.perf_counter()
             before_qc = _read_quadcell_y(
@@ -1885,7 +2050,9 @@ def execute_OPD_closed_loop(
                 qc_readout_sign=qc_readout_sign,
             )
 
+            # Make actuator movement for this step
             try:
+                # Make linear step
                 if mapping["kind"] == "linear":
                     detail = _execute_linear_step(
                         step,
@@ -1898,6 +2065,7 @@ def execute_OPD_closed_loop(
                         linear_settle_delay=linear_settle_delay,
                     )
                 elif mapping["kind"] == "rotation":
+                    # Make rotational step
                     detail = _execute_rotation_step(
                         step,
                         mapping,
@@ -1932,6 +2100,7 @@ def execute_OPD_closed_loop(
                 failure_reason = f"Hardware execution failed for {actuator_label}: {exc}"
                 break
 
+            # Take quadcell reading after step
             after_qc = _read_quadcell_y(
                 hardware,
                 times=fast_qc_avg,
@@ -1941,6 +2110,8 @@ def execute_OPD_closed_loop(
                 base_mirrors=base_mirrors,
                 qc_readout_sign=qc_readout_sign,
             )
+
+            # Determine current quadcell error and OPD
             sim_qc = np.array(
                 S.quadcell_errors_from_variables(x_model, *base_mirrors),
                 dtype=float
@@ -1950,6 +2121,7 @@ def execute_OPD_closed_loop(
             total_accepted_steps += 1
             accepted_this_plan += 1
 
+            # Log details about the step
             entry = {
                 "execution_step": total_accepted_steps,
                 "planner_replan": replan_index,
@@ -1977,6 +2149,7 @@ def execute_OPD_closed_loop(
                 f"OPD={current_OPD:.3f} qc_x=({after_qc['x'][0]:.3f},{after_qc['x'][1]:.3f})"
             )
 
+            # Check if we need to plan out a new path to follow
             if detail.get("replan_recommended"):
                 replan_reason = (
                     f"{actuator_label} QC target miss "
@@ -1984,10 +2157,12 @@ def execute_OPD_closed_loop(
                 )
                 break
 
+            # If we've gone long enough without replanning, break out of this path and replan
             if accepted_this_plan >= replan_every:
                 replan_reason = f"accepted {accepted_this_plan} steps from current plan"
                 break
 
+            # If we're at out target, break out
             if (
                 abs(current_OPD - target_OPD) <= final_OPD_acceptance_tolerance and
                 max(abs(after_qc["y"][0]), abs(after_qc["y"][1])) <= final_qc_tolerance
@@ -1995,10 +2170,12 @@ def execute_OPD_closed_loop(
                 replan_reason = "target_reached"
                 break
 
+        # If there was a failure in the patest plan, stop trying
         if failure_reason is not None:
             log(failure_reason)
             break
 
+        # Get quadcell reading and OPD after finishing latest plan
         final_qc = _read_quadcell_y(
             hardware,
             times=final_qc_avg if replan_reason == "target_reached" else fast_qc_avg,
@@ -2010,6 +2187,7 @@ def execute_OPD_closed_loop(
         )
         current_OPD = S.OPD_from_variables(x_model, *base_mirrors)
 
+        # If we're at the target, stop
         if (
             abs(current_OPD - target_OPD) <= final_OPD_acceptance_tolerance and
             max(abs(final_qc["y"][0]), abs(final_qc["y"][1])) <= final_qc_tolerance
@@ -2031,6 +2209,7 @@ def execute_OPD_closed_loop(
     else:
         failure_reason = f"Reached max_replans={max_replans}."
 
+    # Save final state
     final_mirrors = _x_to_mirrors(x_model, base_mirrors)
     final_OPD = S.OPD_from_variables(x_model, *base_mirrors)
     final_sim_qc = S.quadcell_errors_from_variables(x_model, *base_mirrors)
@@ -2127,7 +2306,8 @@ def execute_OPD_fixed_plan(
         profile_sink=None,
         choose_OPD_kwargs=None,
         **legacy_hardware_kwargs):
-    """Execute one precomputed choose_OPD plan without intermediate replanning."""
+    """Calculate a choose_OPD path to the desired OPD, then execute it without intermediate replanning."""
+
     if profile and profile_sink is None:
         profile_sink = print
 
@@ -2138,6 +2318,7 @@ def execute_OPD_fixed_plan(
             return
         profile_sink(f"[execute_fixed_OPD {time.perf_counter() - t0:.3f}s] {message}")
 
+    # Set up variables for later
     actuator_map = _merged_actuator_map(actuator_map)
     rotation_calibration = _normalized_rotation_calibration(rotation_calibration)
     rng = np.random.default_rng(rng_seed)
@@ -2151,6 +2332,7 @@ def execute_OPD_fixed_plan(
     qc_detector_limit = float(qc_detector_limit)
     qc_hardware_stop = float(qc_hardware_stop)
 
+    # Determine starting state
     base_mirrors = (
         np.array(M1, dtype=float),
         np.array(M2, dtype=float),
@@ -2179,6 +2361,7 @@ def execute_OPD_fixed_plan(
     planner_kwargs.setdefault("final_OPD_relaxed_tolerance", final_OPD_tolerance)
     planner_kwargs.setdefault("final_center_qc_priority", True)
 
+    # Search for a valid path a state with the desired OPD
     planner_profile = []
     mirrors_opt, planner_res, actuation_plan = S.choose_OPD(
         target_OPD,
@@ -2192,11 +2375,15 @@ def execute_OPD_fixed_plan(
         **planner_kwargs,
     )
 
+    # Get found path
     steps = actuation_plan.get("steps", [])
+
+    # Determine if any failures occured along the path
     failure_reason = None
     planner_failure_reason = actuation_plan.get("failure_reason")
     planner_failure_ignored = False
     if actuation_plan.get("failure_reason") is not None:
+        # If the only error that occured was final quadcell error exceeding tolerance, ignore the error
         if (
             allow_final_qc_planner_failure and
             _planner_failure_is_final_qc_only(planner_failure_reason) and
@@ -2216,22 +2403,27 @@ def execute_OPD_fixed_plan(
 
     execution_log = []
 
+    # Iterate through the actuation steps in the found plan
     for step_index, step in enumerate(steps, start=1):
+        # If we hit a failed step, or exceeded the max number of steps, stop
         if failure_reason is not None:
             break
         if step_index > max_total_steps:
             failure_reason = f"Reached max_total_steps={max_total_steps}."
             break
 
+        # If not our first step, sleep until done moving from last step
         if step_index > 1 and step_settle_delay and step_settle_delay > 0:
             time.sleep(step_settle_delay)
 
+        # Determine which actuator is going to be moving
         actuator_label = step.get("actuator")
         if actuator_label not in actuator_map:
             failure_reason = f"No hardware mapping for actuator {actuator_label}."
             break
-
         mapping = actuator_map[actuator_label]
+
+        # Read quadcell error at beginning of step
         step_t0 = time.perf_counter()
         before_qc = _read_quadcell_y(
             hardware,
@@ -2245,6 +2437,7 @@ def execute_OPD_fixed_plan(
 
         try:
             if mapping["kind"] == "linear":
+                # If the step involves moving a linear stage, move it
                 detail = _execute_linear_step(
                     step,
                     mapping,
@@ -2256,6 +2449,7 @@ def execute_OPD_fixed_plan(
                     linear_settle_delay=linear_settle_delay,
                 )
             elif mapping["kind"] == "rotation":
+                # If the step involves rotating a rotational stage, rotate it
                 detail = _execute_rotation_step_fixed(
                     step,
                     mapping,
@@ -2284,6 +2478,7 @@ def execute_OPD_fixed_plan(
             failure_reason = f"Hardware execution failed for {actuator_label}: {exc}"
             break
 
+        # Take quadcell reading after movement is done
         after_qc = _read_quadcell_y(
             hardware,
             times=fast_qc_avg,
@@ -2293,16 +2488,21 @@ def execute_OPD_fixed_plan(
             base_mirrors=base_mirrors,
             qc_readout_sign=qc_readout_sign,
         )
+
+        # Save state and siimulation quadcell error before assimilation process
         measured_sim_qc = _sim_qc_from_quadcell_readout(after_qc["y"], qc_readout_sign)
         pre_assimilation_x = x_estimate.copy()
         pre_assimilation_sim_qc = np.array(
             S.quadcell_errors_from_variables(pre_assimilation_x, *base_mirrors),
             dtype=float
         )
+
+        # After rotation steps, try and find the actual angle we're at based on the measured quadcell readings
         assimilation = None
         if mapping["kind"] == "rotation":
             axis_index = step.get("axis_index")
             try:
+                # Try and find the actual current angle based on the measured quadcell readings
                 x_fit, assimilation = assimilate_rotation_angle_from_qc(
                     x_estimate,
                     axis_index,
@@ -2323,14 +2523,22 @@ def execute_OPD_fixed_plan(
                     "message": str(exc),
                     "angle_delta_from_dead_reckoned": 0.0,
                 }
+
+        # Update latest error values
         post_assimilation_sim_qc = np.array(
             S.quadcell_errors_from_variables(x_estimate, *base_mirrors),
             dtype=float
         )
+
+        # Get what the target error was
         planned_sim_qc = np.array([step["qc1_error"], step["qc2_error"]], dtype=float)
         planned_qc_y = _planned_step_qc_readout(step, qc_readout_sign)
+
+        # Get how close we got to target error
         target_miss = float(np.linalg.norm(planned_qc_y - after_qc["y"]))
         estimate_sim_qc = post_assimilation_sim_qc.copy()
+
+        # Get other details about current state (for logging)
         physical_OPD = S.OPD_from_variables(x_physical, *base_mirrors) if dry_run else None
         estimate_OPD = S.OPD_from_variables(x_estimate, *base_mirrors)
         planned_OPD = float(step.get("OPD", np.nan))
@@ -2347,6 +2555,7 @@ def execute_OPD_fixed_plan(
                 include_edge_ends=actuation_plan.get("include_edge_ends", False),
             )
 
+        # Log details about current state
         entry = {
             "execution_step": step_index,
             "planner_step": step.get("step"),
@@ -2385,14 +2594,17 @@ def execute_OPD_fixed_plan(
         )
 
         if detail.get("failure_reason") is not None:
+            # If this step resulted in a failure, stop stepping
             failure_reason = detail["failure_reason"]
             break
         if float(np.max(np.abs(after_qc["y"]))) > qc_hardware_stop:
+            # If either quadcell error is too high, stop stepping
             failure_reason = (
                 f"Measured QC exceeded +/-{qc_hardware_stop} mm after {actuator_label}."
             )
             break
 
+    # Get final quadcell errors at end of path
     final_qc = _read_quadcell_y(
         hardware,
         times=final_qc_avg,
@@ -2402,6 +2614,8 @@ def execute_OPD_fixed_plan(
         base_mirrors=base_mirrors,
         qc_readout_sign=qc_readout_sign,
     )
+
+    # Save final state after each step
     final_x_for_report = x_estimate
     final_mirrors = _x_to_mirrors(final_x_for_report, base_mirrors)
     final_OPD = S.OPD_from_variables(final_x_for_report, *base_mirrors)
@@ -2409,6 +2623,7 @@ def execute_OPD_fixed_plan(
     final_OPD_error = float(final_OPD - target_OPD)
     final_physical_mirrors = _x_to_mirrors(x_physical, base_mirrors) if dry_run else None
 
+    # Save metric about the movements
     measured_qc_values = []
     rollback_count = 0
     max_step_target_miss = 0.0
@@ -2423,6 +2638,7 @@ def execute_OPD_fixed_plan(
         rollback_count += int(detail.get("rollback_count", 0))
     max_abs_measured_qc = max(measured_qc_values) if measured_qc_values else float(np.max(np.abs(final_qc["y"])))
 
+    # Determine whether the path movement was a success, and save some results
     final_success = (
         failure_reason is None and
         abs(final_OPD_error) <= final_OPD_tolerance and
@@ -2456,6 +2672,8 @@ def execute_OPD_fixed_plan(
             )
         ]
         failure_reason = "Fixed-plan final checks failed: " + ", ".join(failed_checks)
+
+    # Save final resulting state in a consistent format
     final_res = SimpleNamespace(
         success=bool(final_success),
         message=(
@@ -2470,6 +2688,7 @@ def execute_OPD_fixed_plan(
     )
     final_res = S.set_OPD_result_full_x(final_res, *final_mirrors)
 
+    # Save and return final results
     execution = {
         "success": bool(final_success),
         "failure_reason": failure_reason if failure_reason is not None else (None if final_success else final_res.message),
