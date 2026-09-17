@@ -34,40 +34,56 @@ mirror_lengths = [21.4, 21.4, 21.4, 21.4]
 # Set up the laser
 laser_start = (0, 100)
 laser_angle = 0  # Initial laser angle in degrees
+'''Initial laser angle in degrees'''
 
 #Quad Cell Locations
 qc_1 = np.array([-191, 159.46]) # Optimized for.    Initial calib was: ([-191, 158.24])
 qc_2 = np.array([-300, 187.52]) # Optimized for.    Initial calib was: ([-300, 185.75])    
 
 # Calculating OPD
-OPD_x_start = 102.1 # This is the x-coordinate of where the mirror would be in the delay line arm of the M-Z if there was no delay line
-exit_angle_mean = -0.25748389 # Mean exit angle from ArUco + Refl pts optimizations of 12 images. Used to be: -0.2523840245705327 from initial calib
-OPD_cutoff_slope = -1/exit_angle_mean # Slope for 90/10 BS
-OPD_end_point = np.array([-233.95478804,  169.4891394]) # Simulated point where the OPD path would end
-OPD_cutoff_second_pt = np.array([OPD_end_point[0] + 100, OPD_end_point[1] + 100*OPD_cutoff_slope]) # Another point that lies on the line of OPD_end_point w/ slope: OPD_cutoff_slope
-OPD_cutoff_points = np.array([[-233.95478804,  169.4891394],[OPD_cutoff_second_pt[0], OPD_cutoff_second_pt[0]]]) # Line where the OPD calculation would end
+OPD_x_start = 102.1
+'''x-coordinate of where the mirror would be in the delay line arm of the M-Z if there was no delay line'''
+exit_angle_mean = -0.25748389
+'''Mean exit angle from ArUco + Refl pts optimizations of 12 images. Used to be: -0.2523840245705327 from initial calib'''
+OPD_cutoff_slope = -1/exit_angle_mean
+'''Slope for 90/10 BS'''
+OPD_end_point = np.array([-233.95478804,  169.4891394])
+'''Simulated point where the OPD path would end'''
+OPD_cutoff_second_pt = np.array([OPD_end_point[0] + 100, OPD_end_point[1] + 100*OPD_cutoff_slope])
+'''Another point that lies on the line of OPD_end_point w/ slope: OPD_cutoff_slope'''
+OPD_cutoff_points = np.array([[-233.95478804,  169.4891394],[OPD_cutoff_second_pt[0], OPD_cutoff_second_pt[0]]])
+'''Line where the OPD calculation would end'''
 
-THRESHOLD = 220     # Pixel intensity threshold for reflection point detection
+THRESHOLD = 220
+'''Pixel intensity threshold for reflection point detection'''
+
 REFLECTION_ROI_THRESHOLDS = {
     "M1": THRESHOLD,
     "M2": THRESHOLD,
     "M3": THRESHOLD,
     "M4": 200,
 }
-EPS = 7.0           # DBSCAN groups pixels that are within EPS pixels of each other
-MIN_SEP = 15        # minimum separation threshold to separate an ambiguous refl pt into two refl pts
+EPS = 7.0
+'''DBSCAN groups pixels that are within EPS pixels of each other'''
+MIN_SEP = 15
+'''minimum separation threshold to separate an ambiguous refl pt into two refl pts'''
 
 lsr_height = 4.087 # inches
 
-EXIT_TARGET = -0.265    # aligned exit angle
-SIGMA_PX = 3            # px (tune)
-SIGMA_EXIT = 8          # units of simulation_identifier (tune)
-SIGMA_REFL = 3          # px (tune)
+EXIT_TARGET = -0.265
+'''aligned exit angle'''
+SIGMA_PX = 3
+'''px (tune)'''
+SIGMA_EXIT = 8
+'''units of simulation_identifier (tune)'''
+SIGMA_REFL = 3
+'''px (tune)'''
 SIGMA_OPD = 0.01
 SIGMA_QC = 0.01
 SIGMA_MIRROR_CENTER = 0.15
 
-DEFAULT_PEN = 50.0     # px penalty converted to residual via /SIGMA_REFL
+DEFAULT_PEN = 50.0
+'''px penalty converted to residual via /SIGMA_REFL'''
 
 # M1y, M2y, M3y, M4y = 109, 73, 69, 120 # simulation units (mm)
 
@@ -87,6 +103,11 @@ def calculate_mirror_endpoints(center, length, angle):
 
 # Function to find the intersection of two lines
 def find_intersection(p1, p2, p3, p4, eps=1e-9):
+    '''Finds the intersection of two lines
+    Returns:
+        p: (float, float) - Intersection point of the lines
+        u: float - ???
+    '''
     x1, y1 = p1
     x2, y2 = p2
     x3, y3 = p3
@@ -112,6 +133,20 @@ def find_intersection(p1, p2, p3, p4, eps=1e-9):
 # Function to calculate the reflection of a laser beam
 # This is used for the optimization
 def reflect_laser_ordered(laser_start, laser_angle, mirror):
+    '''Calculates the reflection of a laser beam (used for optimization)
+
+    Parameters:
+        laser_start: (float, float) - Coordinates of the laser starting position
+        laser_angle: float - Angle the laser is traveling (in degrees) relative to horizontal
+        mirror: ((float, float), (float, float)) - Endpoints of the mirror
+    
+    Returns:
+        intersection: (float, float) - Intersection point where the reflection occurs (startpoint of reflected laser line)
+        reflected_end: (float, float) - Endpoint of reflected laser line
+        inside: (boolean) - If the reflection point is contained in the mirror bounds
+        u: float - Percentage along mirror reflection takes place?
+
+    '''
     laser_angle_rad = np.radians(laser_angle)
     laser_far_end = (
         laser_start[0] + np.cos(laser_angle_rad) * 1000,
@@ -158,6 +193,13 @@ def reflect_laser_ordered(laser_start, laser_angle, mirror):
     return intersection, reflected_end, inside, u
 
 def trace_reflections(laser_start, laser_angle, mirrors, max_reflections=36):
+    '''
+        Returns:
+            reflected_data: ({}, ...) - Set of data about laser reflections containing:
+                "mirror_index": int - Which mirror the laser is reflecting off of
+                "point": (float, float) - Intersection point coordinates
+                "u": float - Percentage along mirror reflection takes place?
+    '''
     current_position = laser_start
     current_angle = laser_angle
     mirror_index = 0
@@ -197,6 +239,12 @@ def calculate_distance(p1, p2):
 # Simulate laser reflections with length calculation
 # Gives us the laser path and total laser length
 def simulate_laser_with_length(laser_start, laser_angle, mirrors, max_reflections=36, exit_dist=1000):
+    '''Simulate laser reflections with length calculation
+    Returns:
+        laser_path: ((float, float), ...) - List of reflection points the laser traveled to
+        total_path_length: float - Total distance the laser traveled from the start point
+        reflection_count: int - number of reflections before stopping, or missing a mirror
+    '''
     current_position = laser_start
     current_angle = laser_angle
     laser_path = [laser_start]
@@ -259,6 +307,7 @@ def simulate_laser_with_length(laser_start, laser_angle, mirrors, max_reflection
     return laser_path, total_path_length, reflection_count
 
 def extend_line(p1, p2):
+    '''Extends the length of a line, returning farther apart endpoints'''
     # Calculate the length of the line
     dx = p2[0] - p1[0]
     dy = p2[1] - p1[1]
@@ -298,6 +347,7 @@ def select_furthest_orthogonal_line(endpoint, ortho_p1, ortho_p2, reference_x=10
         return (endpoint, ortho_p2)
 
 def process_mirrors(mirrors):
+    '''Gets line representations of the passed in mirrors, consisting of the mirror face and orthogonal lines at the end points'''
     doubled_lines = []
     orthogonal_lines = []
     
@@ -317,6 +367,7 @@ def process_mirrors(mirrors):
     return doubled_lines, orthogonal_lines
 
 def build_mirrors(M1, M2, M3, M4):
+    '''Gets endpoints of mirrors from passed in center points and angles'''
     mirrors = []
     mirror_centers = [(M1[0], M1[1]), (M2[0], M2[1]), (M3[0], M3[1]), (M4[0], M4[1])]
     mirror_angles = [M1[2], M2[2], M3[2], M4[2]]
@@ -327,6 +378,7 @@ def build_mirrors(M1, M2, M3, M4):
     return mirrors
 
 def edge_penalty(u, u_min=0.2, u_max=0.8):
+    '''Determines how far past the min/max u value a reflection takes place'''
     if u < u_min:
         return u_min - u
     elif u > u_max:
@@ -335,11 +387,13 @@ def edge_penalty(u, u_min=0.2, u_max=0.8):
         return 0.0
 
 def get_reflection_count(M1, M2, M3, M4):
+    '''Determine how many reflections the laser will undergo for the defined mirrors (given center points and angles)'''
     mirrors = build_mirrors(M1, M2, M3, M4)
     _, _, reflection_count = simulate_laser_with_length(laser_start, laser_angle, mirrors)
     return reflection_count
 
 def simulation(m1cx, m1cy, m2cx, m2cy, m3cx, m3cy, m4cx, m4cy, m1a, m2a, m3a, m4a):
+    '''Simulate the laser reflections. Create a plot to show the paths of the beam, as well as the mirrors'''
 
     mirrors = []
 
@@ -478,6 +532,7 @@ def simulation(m1cx, m1cy, m2cx, m2cy, m3cx, m3cy, m4cx, m4cy, m1a, m2a, m3a, m4
     plt.show()
 
 def simulation_fig(m1cx, m1cy, m2cx, m2cy, m3cx, m3cy, m4cx, m4cy, m1a, m2a, m3a, m4a):
+    '''Simulate the laser reflections. Creates AND RETURNS a plot to show the paths of the beam, as well as the mirrors and the quadcell locations'''
 
     mirrors = []
 
@@ -678,6 +733,7 @@ def simulation_fig(m1cx, m1cy, m2cx, m2cy, m3cx, m3cy, m4cx, m4cy, m1a, m2a, m3a
 def simulation_reflec(m1cx, m1cy, m2cx, m2cy, m3cx, m3cy, m4cx, m4cy,
     m1a, m2a, m3a, m4a, expected_reflections=7
 ):
+    '''Gets a list of the reflections (including intsection point, mirror index, and whether it's inside the mirror or not) for the given mirrors'''
     mirror_centers = [(m1cx, m1cy), (m2cx, m2cy),
                       (m3cx, m3cy), (m4cx, m4cy)]
     mirror_angles = [m1a, m2a, m3a, m4a]
@@ -724,8 +780,17 @@ def simulation_reflec(m1cx, m1cy, m2cx, m2cy, m3cx, m3cy, m4cx, m4cy,
 
     return path
 
-# Tells us the exit angle, total laser length, and quadcell displacement
 def simulation_identifier(m1cx, m1cy, m2cx, m2cy, m3cx, m3cy, m4cx, m4cy, m1a, m2a, m3a, m4a):
+    '''Tells us the exit angle, total laser length, and quadcell displacement
+    
+    Returns:
+        metrics: float array
+            [0] - Outgoing slope of the laser after the last reflection
+            [1] - Total length traveled by the laser beam
+            [2] - Beam y error at x = -191 (first quadcell)
+            [3] - Beam y error at x = -300 (shortened second quadcell?)
+            [4] - Beam y error at x = -595 (second quadcell?)
+    '''
     metrics = _simulation_metrics(
         m1cx, m1cy, m2cx, m2cy,
         m3cx, m3cy, m4cx, m4cy,
@@ -741,6 +806,15 @@ def simulation_identifier(m1cx, m1cy, m2cx, m2cy, m3cx, m3cy, m4cx, m4cy, m1a, m
     return metrics
 
 def _simulation_metrics(m1cx, m1cy, m2cx, m2cy, m3cx, m3cy, m4cx, m4cy, m1a, m2a, m3a, m4a):
+    '''Returns metrics about the simulation run with the inputted mirror parameters
+    
+    Returns:
+        exit_slope: float - Outgoing slope of the laser after the last reflection
+        total_length: float - Total length traveled by the laser beam
+        y191: float - Beam y error at x = -191 (first quadcell)
+        y300: float - Beam y error at x = -300 (shortened second quadcell?)
+        y595: float - Beam y error at x = -595 (second quadcell?)
+    '''
     mirrors = []
 
     mirror_centers = [(m1cx, m1cy), (m2cx, m2cy), (m3cx, m3cy), (m4cx, m4cy)]
@@ -784,8 +858,18 @@ def _simulation_metrics(m1cx, m1cy, m2cx, m2cy, m3cx, m3cy, m4cx, m4cy, m1a, m2a
 
 # TRANSITION FUNCTIONS
 
-# Given a pixel coordinate and its known height (u,v,H_in), this function returns the real-life coordinates (inches)
+
 def pixel_to_world_on_plane(u, v, H_in=0.0, override_cam_height=None):
+    '''Given a pixel coordinate and its known height, returns the real-life coordinates (inches)
+    
+    Parameters:
+         u: First pixel cooordnate
+         v: Second pixel coordinate
+         H_in: float - Known height of the coordinate
+
+    Returns:
+        (float, float) - Real life coordinates of the pixel in inches
+    '''
     pts = np.array([[[u, v]]], dtype=np.float64)
     rays_norm = cv.fisheye.undistortPoints(pts, K, D)  # pinhole model
     x, y = rays_norm[0,0]
@@ -805,8 +889,8 @@ def pixel_to_world_on_plane(u, v, H_in=0.0, override_cam_height=None):
     return float(Pw[0]), float(Pw[1])
 
 # This is the opposite of pixel_to_world_on_plane.
-# Given a real-life coordinate point (inches), this function returns the corresponding pixel coordinate
 def world_to_pixel(X, Y, Z):
+    '''Given a real-life coordinate point (inches), returns the corresponding pixel coordinate'''
     obj = np.array([[[X, Y, Z]]], dtype=np.float64)  # (1,1,3)
     img_proj, _ = cv.fisheye.projectPoints(obj, rvec_cw, tvec_cw, K, D)
     u, v = img_proj.reshape(2)
@@ -814,8 +898,9 @@ def world_to_pixel(X, Y, Z):
 
 # ArUcos
 
-# Returns the pixel coordinates of the detected ArUco points
 def camera_arucos(img_path):
+    '''Returns the pixel coordinates of the detected ArUco points'''
+
     # --- Config ---
     dict_name = "DICT_4X4_100"
     allowed_ids = {0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11}
@@ -878,11 +963,12 @@ def camera_arucos(img_path):
 
 # LASER REFLECTION POINTS
 
-# Performs Principal Component Analysis (PCA) to distinguish laser reflection points that are elliptical
 def pca_elongation(points_xy):
-    """
-    points_xy: (N,2) array of [x,y] in patch coords.
-    returns (ratio, major_sigma, minor_sigma, angle_rad)
+    """ Performs Principal Component Analysis (PCA) to distinguish laser reflection points that are elliptical
+    Parameters:
+        points_xy: (N,2) array of [x,y] in patch coords.
+    Returns:
+        (ratio, major_sigma, minor_sigma, angle_rad)
     """
     pts = points_xy.astype(float)
     pts -= pts.mean(axis=0, keepdims=True)
@@ -984,6 +1070,7 @@ def postprocess_split_peanuts(clusters, radius_split=50.0, elong_split=5, min_se
     return new_clusters
 
 def find_clusters_with_circles(patch, threshold=THRESHOLD, eps=EPS, min_samples=50, show=True, title=""):
+    '''Finds clusters and their centers (corresponding to the laser reflection points?)'''
     y_coords, x_coords = np.where(patch > threshold)
 
     if len(x_coords) == 0:
@@ -1067,6 +1154,7 @@ def find_clusters_with_circles(patch, threshold=THRESHOLD, eps=EPS, min_samples=
 
 
 def clusters_in_roi(gray, roi, threshold=THRESHOLD, eps=EPS, min_samples=35, show=True):
+    '''Find clusters in the given Regions of Interest (ROIs)'''
     x1, y1, x2, y2 = roi
     patch = gray[y1:y2, x1:x2]
 
@@ -1102,6 +1190,8 @@ def process_all_rois(gray_img, rois, threshold, eps=EPS, min_samples=35, show=Fa
     return results
 
 def reflec_pts_cam(gray_img, eps=EPS, min_samples=35, show=False):
+    '''Find the reflection points in the ROIs corresponding to the area around each mirror. 
+    Makes sure the correct number of reflections are reported, even if not all are detected'''
     all_clusters = process_all_rois(
         gray_img,
         rois=rois,
@@ -1153,6 +1243,8 @@ def reflec_pts_cam(gray_img, eps=EPS, min_samples=35, show=False):
     return grouped
 
 def reflec_pts_cam_num_reflec(gray_img, eps=EPS, min_samples=35, show=False):
+    '''Find the reflection points in the ROIs corresponding to the area around each mirror. 
+    Return only reflection points detected (and the number of them), even if it doesn't align with the expected number of reflections'''
 
     all_clusters = process_all_rois(
         gray_img,
@@ -1182,6 +1274,7 @@ def reflec_pts_cam_num_reflec(gray_img, eps=EPS, min_samples=35, show=False):
 # Inverse Problem
 
 def sim_to_pt(loc_x, loc_y):
+    '''Convert coordinate location in simulation (mm) to location in real life (inches)'''
     # Calibration constants from your original function
     calib_irl = [-2.65720102, -0.922]
     calib_sim = [-160, -109]
@@ -1282,11 +1375,13 @@ def get_mount_corners(x, y, z, theta_deg,
 # THE OPTIMIZATION PROCESS
 
 def sim_to_px_reflec(x, y): # For reflection points
+    '''Converts inputted simulation reflection point location to corresponding camera pixel'''
     sim_M_IRL = sim_to_pt(x, y)
     pixel_point = world_to_pixel(sim_M_IRL[0], sim_M_IRL[1], lsr_height)
     return pixel_point
 
 def sim_to_px(x, y, a):  # For ArUcos
+    '''Converts inputted simulation mirror location to corresponding ArUco camera pixels'''
     sim_M_IRL = sim_to_pt(x, y)
 
     Xw = sim_M_IRL[0]
@@ -1305,6 +1400,7 @@ def sim_to_px(x, y, a):  # For ArUcos
     return sim_M_corner_1, sim_M_corner_2, sim_M_corner_3
 
 def aruco_pixel_residuals(theta, img_path):
+    '''Determines the difference in calculated ArUco pixels from the simulation vs actual measured ArUco pixels in the passed in image'''
     # ---- cache camera ArUco detection by image path ----
     if not hasattr(aruco_pixel_residuals, "_aruco_cache"):
         aruco_pixel_residuals._aruco_cache = {}
@@ -1327,8 +1423,8 @@ def aruco_pixel_residuals(theta, img_path):
     residuals = (M_all_px - camera_aruco_coords).reshape(-1)
     return residuals
 
-# The residuals (differences) between the measured and simulated components (ArUcos, Reflection points, ...)
 def residuals(theta, img_path_light, reflec_cam, expected_total):
+    '''Returns the residuals (differences) between the measured and simulated components (ArUcos, Reflection points, extra reflection)'''
 
     M1x, M2x, M3x, M4x, M1y, M2y, M3y, M4y, M1a, M2a, M3a, M4a = theta
 
@@ -1431,6 +1527,7 @@ def residuals(theta, img_path_light, reflec_cam, expected_total):
     return np.concatenate([r_aruco, r_refl_pts, r_extra_count]) # r_exit_angle, r_exit_height
 
 def align_sim_residuals(angles, M1, M2, M3, M4):
+    '''Get expected quadcell error from simulation'''
     g = simulation_identifier(
         M1[0], M1[1], M2[0], M2[1], M3[0], M3[1], M4[0], M4[1],
         angles[0], angles[1], angles[2], angles[3]
@@ -1444,6 +1541,7 @@ def align_sim_residuals(angles, M1, M2, M3, M4):
     ], dtype=float)
 
 def center_quadcells_residuals(angles, M1, M2, M3, M4, target_reflections, u_min=0.1, u_max=0.9, sigma_edge=0.1):
+    '''Determine normalized quadcell errors'''
     M1_new = np.array([M1[0], M1[1], angles[0]], dtype=float)
     M2_new = np.array([M2[0], M2[1], angles[1]], dtype=float)
     M3_new = np.array([M3[0], M3[1], angles[2]], dtype=float)
@@ -1480,6 +1578,7 @@ def center_quadcells_residuals(angles, M1, M2, M3, M4, target_reflections, u_min
     return np.array(residuals, dtype=float)
 
 def pack_mirrors(M1, M2, M3, M4):
+    '''Create matrix of the given mirror characteristics'''
     return np.array([
         M1[0], M1[1], M1[2],
         M2[0], M2[1], M2[2],
@@ -1488,6 +1587,7 @@ def pack_mirrors(M1, M2, M3, M4):
     ], dtype=float)
 
 def unpack_mirrors(x):
+    '''Create mirror objects from characteristic matrix'''
     M1 = np.array(x[0:3], dtype=float)
     M2 = np.array(x[3:6], dtype=float)
     M3 = np.array(x[6:9], dtype=float)
@@ -1495,6 +1595,7 @@ def unpack_mirrors(x):
     return M1, M2, M3, M4
 
 def pack_variables(M1, M2, M3, M4): # Excluding y-values
+    '''Pack mirror x and angles into matrix'''
     return np.array([
         M1[0], M1[2],
         M2[0], M2[2],
@@ -1503,6 +1604,7 @@ def pack_variables(M1, M2, M3, M4): # Excluding y-values
     ], dtype=float)
 
 def unpack_variables(x, M1, M2, M3, M4): # Excluding y-values
+    '''Unpack mirror x and angles from matrix'''
     M1_new = np.array([x[0], M1[1], x[1]], dtype=float)
     M2_new = np.array([x[2], M2[1], x[3]], dtype=float)
     M3_new = np.array([x[4], M3[1], x[5]], dtype=float)
@@ -1510,6 +1612,7 @@ def unpack_variables(x, M1, M2, M3, M4): # Excluding y-values
     return M1_new, M2_new, M3_new, M4_new
 
 def metrics_from_variables(x, M1, M2, M3, M4):
+    '''Returns matrix of simulation metrics (exit angle, total length, and quadcell error values)'''
     M1_new, M2_new, M3_new, M4_new = unpack_variables(x, M1, M2, M3, M4)
     return np.array(_simulation_metrics(
         M1_new[0], M1_new[1],
@@ -1536,6 +1639,7 @@ def reflection_us_from_variables(x, M1, M2, M3, M4, include_ends=False):
     return np.array([hit["u"] for hit in reflection_data], dtype=float)
 
 def reflection_edge_summary(x, M1, M2, M3, M4, include_ends=False):
+    '''Returns a summary of the reflection u values (min_u, max_u, closest_edge_margin, and u_values)'''
     us = reflection_us_from_variables(x, M1, M2, M3, M4, include_ends=include_ends)
 
     if len(us) == 0:
@@ -1557,8 +1661,11 @@ def reflection_edge_penalties_from_variables(x, M1, M2, M3, M4,
                                              u_min=0.1,
                                              u_max=0.9,
                                              include_ends=False):
+    '''Gets the u penalty values (how far out of target range they are)'''
+
     us = reflection_us_from_variables(x, M1, M2, M3, M4, include_ends=include_ends)
     return np.array([edge_penalty(u, u_min=u_min, u_max=u_max) for u in us], dtype=float)
+
 
 def fixed_reflection_edge_penalties_from_variables(x, M1, M2, M3, M4,
                                                    expected_count,
@@ -1566,6 +1673,8 @@ def fixed_reflection_edge_penalties_from_variables(x, M1, M2, M3, M4,
                                                    u_max=0.9,
                                                    include_ends=False,
                                                    missing_penalty=1.0):
+    '''Gets the sepecified number of u penalty values, even if there weren't that many reflections'''
+
     penalties = reflection_edge_penalties_from_variables(
         x, M1, M2, M3, M4,
         u_min=u_min,
@@ -1584,6 +1693,8 @@ def fixed_reflection_edge_penalties_from_variables(x, M1, M2, M3, M4,
     )
 
 def selected_OPD_variable_indices(moving_linear_stages=("M1",)):
+    '''Gets a list of indices corresponding to the moving stages passed in'''
+
     if moving_linear_stages is None:
         return np.arange(8, dtype=int)
 
@@ -1604,6 +1715,7 @@ def selected_OPD_variable_indices(moving_linear_stages=("M1",)):
     return np.array(sorted(set(selected)), dtype=int)
 
 def expand_selected_variables(x_selected, x_base, variable_indices):
+    '''Returns x_base with the indices specified by variable_indices replaced by x_selected'''
     x_full = np.array(x_base, dtype=float).copy()
     x_full[np.array(variable_indices, dtype=int)] = np.array(x_selected, dtype=float)
     return x_full
@@ -1612,6 +1724,7 @@ def quadcell_constraints_ok(qc1_error, qc2_error,
                             max_qc_error=2.0,
                             max_qc_difference=None,
                             tolerance=0.0):
+    '''Determines if the quadcell errors are within tolerance'''
     difference_ok = (
         True if max_qc_difference is None
         else abs(qc1_error - qc2_error) <= max_qc_difference + tolerance
@@ -1631,6 +1744,26 @@ def actuation_constraint_diagnostics(x, M1, M2, M3, M4,
                                      enforce_edge_bounds=True,
                                      include_edge_ends=False,
                                      constraint_tolerance=0.0):
+    '''Checks if any of the following conditions aren't met:
+    - Quadcell metric non finite
+    - Quadcell 1 error too high
+    - Quadcell 2 error too high
+    - Difference in Quadcell errors is too high
+    - Didn't get expected number of reflections
+    - Reflection point outside acceptable mirror range (u too high or too small)
+    
+        Returns:
+            {} with the following:
+                'ok': No failures encountered?
+                'failures': list of failures encountered
+                'qc1_error': Quadcell 1 error
+                'qc2_error': Quadcell 2 error
+                'qc_difference': Difference in quadcell errors
+                'reflection_count': Number of reflections
+                'min_u': minimum reflection u value
+                'max_u': maximum reflection u value
+                'closest_edge_margin': u value closest to being "out of bounds"
+    '''
     qc1_error, qc2_error = quadcell_errors_from_variables(x, M1, M2, M3, M4)
     mirrors = unpack_variables(x, M1, M2, M3, M4)
     reflection_count = get_reflection_count(*mirrors)
@@ -1683,12 +1816,14 @@ ACTUATOR_AXES = [
 ]
 
 def actuator_label(axis_index):
+    '''Convert actuator index into what the actuator is'''
     for mirror_name, command_name, idx in ACTUATOR_AXES:
         if idx == axis_index:
             return f"{mirror_name}.{command_name}"
     return None
 
 def variables_with_axis_move(x, axis_index, amount):
+    '''Returns an updated position after moving the specified actuator by the specified amount'''
     x_next = np.array(x, dtype=float).copy()
     x_next[axis_index] += amount
     return x_next
@@ -1702,6 +1837,7 @@ def state_satisfies_actuation_constraints(x, M1, M2, M3, M4,
                                           enforce_edge_bounds=True,
                                           include_edge_ends=False,
                                           constraint_tolerance=0.0):
+    '''Whether or not any failures are encountered for this setup'''
     diagnostics = actuation_constraint_diagnostics(
         x, M1, M2, M3, M4,
         max_qc_error=max_qc_error,
@@ -1725,6 +1861,7 @@ def one_actuator_motion_is_valid(x_previous, x_current, M1, M2, M3, M4,
                                  enforce_edge_bounds=True,
                                  include_edge_ends=False,
                                  constraint_tolerance=0.0):
+    '''Determines if moving from x_previous to x_current causes any failures to occur while moving'''
     delta = np.array(x_current, dtype=float) - np.array(x_previous, dtype=float)
     if np.count_nonzero(np.abs(delta) > 1e-12) > 1:
         return False
@@ -1756,6 +1893,7 @@ def motion_stays_within_constraints(x_previous, x_current, M1, M2, M3, M4,
                                     enforce_edge_bounds=True,
                                     include_edge_ends=False,
                                     constraint_tolerance=0.0):
+    '''Determines if moving from x_previous to x_current causes any failures to occur'''
     x_previous = np.array(x_previous, dtype=float)
     x_current = np.array(x_current, dtype=float)
     delta = x_current - x_previous
@@ -1825,13 +1963,19 @@ def make_actuation_step(step_index, fraction, x_previous, x_current, M1, M2, M3,
                         include_edge_ends=False,
                         enforce_edge_bounds=True,
                         constraint_tolerance=0.0):
+    '''Summarize the step that's occurring, including info about which axi is changing, by how much, the new mirror state, and parameters (i.e. error + metrics) about the new state'''
+
+    # Get new state
     M1_new, M2_new, M3_new, M4_new = unpack_variables(x_current, M1, M2, M3, M4)
     g = metrics_from_variables(x_current, M1, M2, M3, M4)
     reflection_count = get_reflection_count(M1_new, M2_new, M3_new, M4_new)
     delta = np.array(x_current, dtype=float) - np.array(x_previous, dtype=float)
+
+    # Determine which actuator is causing this step
     active_axes = np.flatnonzero(np.abs(delta) > 1e-12)
     active_axis = int(active_axes[0]) if len(active_axes) == 1 else None
 
+    # Get the change in each actuator axis for the step
     commands = {
         "M1": {"dx": x_current[0] - x_previous[0], "dangle": x_current[1] - x_previous[1]},
         "M2": {"dx": x_current[2] - x_previous[2], "dangle": x_current[3] - x_previous[3]},
@@ -1839,6 +1983,7 @@ def make_actuation_step(step_index, fraction, x_previous, x_current, M1, M2, M3,
         "M4": {"dx": x_current[6] - x_previous[6], "dangle": x_current[7] - x_previous[7]}
     }
 
+    # Get the current state of the mirrors after making the step
     cumulative = {
         "M1": {"x": x_current[0], "angle": x_current[1]},
         "M2": {"x": x_current[2], "angle": x_current[3]},
@@ -1846,6 +1991,7 @@ def make_actuation_step(step_index, fraction, x_previous, x_current, M1, M2, M3,
         "M4": {"x": x_current[6], "angle": x_current[7]}
     }
 
+    # Assess errors after making the step
     qc1_error = g[2]
     qc2_error = g[4]
     edge_summary = reflection_edge_summary(
@@ -1901,6 +2047,9 @@ def build_actuation_plan_summary(steps, x_start, x_target, M1, M2, M3, M4,
                                  search_mode=None,
                                  split_count=None,
                                  failure_reason=None):
+    '''Returns metrics about the passed in actuation plan. If no steps passed in, then summarize current state'''
+
+    # 
     start_metrics = metrics_from_variables(x_start, M1, M2, M3, M4)
     target_metrics = metrics_from_variables(x_target, M1, M2, M3, M4)
     start_qc1_error, start_qc2_error = start_metrics[2], start_metrics[4]
@@ -1908,6 +2057,7 @@ def build_actuation_plan_summary(steps, x_start, x_target, M1, M2, M3, M4,
     target_mirrors = unpack_variables(x_target, M1, M2, M3, M4)
 
     if len(steps) > 0:
+        # The plan has steps in it
         max_abs_qc1_error = max(abs(step["qc1_error"]) for step in steps)
         max_abs_qc2_error = max(abs(step["qc2_error"]) for step in steps)
         max_abs_qc_difference = max(abs(step["qc_difference"]) for step in steps)
@@ -1915,6 +2065,7 @@ def build_actuation_plan_summary(steps, x_start, x_target, M1, M2, M3, M4,
         max_reflection_u = max(step["max_reflection_u"] for step in steps)
         min_closest_edge_margin = min(step["closest_edge_margin"] for step in steps)
     else:
+        # Plan has no step (everything is based on starting conditions)
         max_abs_qc1_error = abs(start_qc1_error)
         max_abs_qc2_error = abs(start_qc2_error)
         max_abs_qc_difference = abs(start_qc1_error - start_qc2_error)
@@ -2354,15 +2505,24 @@ def try_one_actuator_sequence(x_start, x_target, axis_sequence, M1, M2, M3, M4,
                               enforce_edge_bounds=True,
                               include_edge_ends=False,
                               constraint_tolerance=0.0):
+    '''Checks if the specified actuator sequence will result in reachnig the target position while staying in the constraints after each actuation step
+    
+    Returns: 
+        None if this sequence didn't work out, otherwise returns the sequence of steps that occurred'''
+
     x_current = np.array(x_start, dtype=float).copy()
     x_target = np.array(x_target, dtype=float)
     steps = []
 
     for axis_index in axis_sequence:
+
+        # Determine how much this actuator needs to move to reach target
         amount = x_target[axis_index] - x_current[axis_index]
         if abs(amount) <= 1e-12:
+            # If we're not really moving at all, then skip this actuator
             continue
 
+        # Moves the actuator by the desired amount. If this causes us to go outside constraints, then return None
         x_next = variables_with_axis_move(x_current, axis_index, amount)
         if not one_actuator_motion_is_valid(
             x_current, x_next, M1, M2, M3, M4,
@@ -2378,6 +2538,7 @@ def try_one_actuator_sequence(x_start, x_target, axis_sequence, M1, M2, M3, M4,
         ):
             return None
 
+        # The move was valid, so add it to the actuation plan
         steps.append(make_actuation_step(
             len(steps) + 1,
             np.linalg.norm(x_next - x_start) / max(np.linalg.norm(x_target - x_start), 1e-12),
@@ -2391,11 +2552,15 @@ def try_one_actuator_sequence(x_start, x_target, axis_sequence, M1, M2, M3, M4,
             enforce_edge_bounds=enforce_edge_bounds,
             constraint_tolerance=constraint_tolerance
         ))
+
+        # Update current position for next actuator in sequence
         x_current = x_next
 
+    # If after going thru the sequence we're not actually at the target, return None
     if not np.allclose(x_current, x_target, atol=1e-9, rtol=0):
         return None
 
+    # Plan was a success, return the steps in the plan
     return steps
 
 def max_valid_single_axis_fraction(x_current, x_target, axis_index, M1, M2, M3, M4,
@@ -2410,11 +2575,16 @@ def max_valid_single_axis_fraction(x_current, x_target, axis_index, M1, M2, M3, 
                                    constraint_tolerance=0.0,
                                    scan_samples=40,
                                    zero_tol=1e-10):
+    '''Determines what fraction of the total movement needed from one actuator that the actuator is able to do without failing any of the constraints'''
+
+    # Determine how much this actuator needs to move
     amount = float(np.array(x_target, dtype=float)[axis_index] - np.array(x_current, dtype=float)[axis_index])
     if abs(amount) <= zero_tol:
         return 0.0
 
+
     def valid_at_fraction(fraction):
+        '''Determines if moving the actuator the specified fraction of its remaining movement is a valid step or not'''
         x_next = variables_with_axis_move(x_current, axis_index, amount * fraction)
         return one_actuator_motion_is_valid(
             x_current, x_next, M1, M2, M3, M4,
@@ -2429,9 +2599,11 @@ def max_valid_single_axis_fraction(x_current, x_target, axis_index, M1, M2, M3, 
             constraint_tolerance=constraint_tolerance
         )
 
+    # If we can just move the entire amount, then the fraction is 1
     if valid_at_fraction(1.0):
         return 1.0
 
+    # Linearly finds where from 0% to 100% of the desired movment amount the state is no longer valid
     last_good = 0.0
     first_bad = None
     for fraction in np.linspace(0.0, 1.0, scan_samples + 1)[1:]:
@@ -2441,9 +2613,11 @@ def max_valid_single_axis_fraction(x_current, x_target, axis_index, M1, M2, M3, 
             first_bad = fraction
             break
 
+    # If we never failed, then return the lastest position
     if first_bad is None:
         return last_good
 
+    # Binary search to home in on the highest valid fraction
     lo = last_good
     hi = first_bad
     for _ in range(30):
@@ -2453,6 +2627,7 @@ def max_valid_single_axis_fraction(x_current, x_target, axis_index, M1, M2, M3, 
         else:
             hi = mid
 
+    # Returns the maximum fraction that results in a valid step
     return lo
 
 def try_greedy_one_actuator_path(x_start, x_target, M1, M2, M3, M4,
@@ -2467,21 +2642,32 @@ def try_greedy_one_actuator_path(x_start, x_target, M1, M2, M3, M4,
                                  include_edge_ends=False,
                                  constraint_tolerance=0.0,
                                  zero_tol=1e-9):
+    '''Tries a greedy actuator path to reach the target. Determines how much each actuator is able to move towards the target, and chooses the best one for the next step in the actuation path
+    
+    Returns:
+        None if there was no valid actuation path found, otherwise returns a list of the actuation steps'''
+
     x_current = np.array(x_start, dtype=float).copy()
     x_target = np.array(x_target, dtype=float)
     steps = []
     variable_scale = np.array([10.0, 0.1, 10.0, 0.1, 10.0, 0.1, 10.0, 0.1], dtype=float)
 
     for _ in range(max_steps):
+
+        # Determine how much left we have to go to get to the target, and which axes are involved
         remaining = x_target - x_current
         active_axes = np.flatnonzero(np.abs(remaining) > zero_tol)
         if len(active_axes) == 0:
+            # If we're already there, return the path that got us there
             return steps
 
+        # Normalize the distance each axis still has to travel to be consistent between linear movement and rotational movement
         current_distance = np.linalg.norm(remaining / variable_scale)
         best_candidate = None
 
         for axis_index in active_axes:
+
+            # Get the max fraction of its total movement this actuator can do
             max_fraction = max_valid_single_axis_fraction(
                 x_current, x_target, int(axis_index), M1, M2, M3, M4,
                 max_qc_error=max_qc_error,
@@ -2499,23 +2685,29 @@ def try_greedy_one_actuator_path(x_start, x_target, M1, M2, M3, M4,
             if max_fraction <= 1e-6:
                 continue
 
+            # Move to the updated position
             x_next = variables_with_axis_move(
                 x_current,
                 int(axis_index),
                 remaining[axis_index] * max_fraction
             )
+
+            # Determine how much (normalized) progress was made by this actuation step
             next_distance = np.linalg.norm((x_target - x_next) / variable_scale)
             progress = current_distance - next_distance
             if progress <= 1e-10:
                 continue
 
+            # Finds which actuator made the most progress towards reachingthe target
             candidate = (progress, max_fraction, int(axis_index), x_next)
             if best_candidate is None or candidate[:2] > best_candidate[:2]:
                 best_candidate = candidate
 
+        # No actuator made any reasonable progress, this path is invalid
         if best_candidate is None:
             return None
 
+        # Append the best actuator step to the plan
         _, _, axis_index, x_next = best_candidate
         steps.append(make_actuation_step(
             len(steps) + 1,
@@ -2534,23 +2726,31 @@ def try_greedy_one_actuator_path(x_start, x_target, M1, M2, M3, M4,
         ))
         x_current = x_next
 
+    # If we got close enough to the target, return the path
     if np.allclose(x_current, x_target, atol=1e-8, rtol=0):
         return steps
 
+    # No valid path was found
     return None
 
 def candidate_axis_orders(active_axes, delta, include_all_permutations=True):
+    '''Returns possible axis orders based on their corresponding magnitude in delta (ascending and descending), plus all unique permutations if desired'''
+
+    # Turn array of active aes into a list? If only 1 element, return it
     active_axes = list(active_axes)
     if len(active_axes) <= 1:
         return [tuple(active_axes)]
 
+    # Sorts active axes direction by ther corresponding magnitude in delta
     ranked = tuple(sorted(active_axes, key=lambda idx: abs(delta[idx])))
     reverse_ranked = tuple(reversed(ranked))
 
+    # Compile the sorted orders into a list, plus all permutations of the axes if desired
     orders = [ranked, reverse_ranked]
     if include_all_permutations and len(active_axes) <= 8:
         orders.extend(itertools.permutations(active_axes))
 
+    # Trim duplicates
     seen = set()
     unique_orders = []
     for order in orders:
@@ -2571,6 +2771,8 @@ def validate_actuation_steps(steps, x_start, M1, M2, M3, M4,
                              enforce_edge_bounds=True,
                              include_edge_ends=False,
                              constraint_tolerance=0.0):
+    '''Checks the passed in actuator path to make sure it's valid (keeps the system constrained)'''
+
     x_previous = np.array(x_start, dtype=float).copy()
 
     for step in steps:
@@ -2606,6 +2808,17 @@ def plan_actuation_path(x_start, x_target, M1, M2, M3, M4,
                         zero_tol=1e-9,
                         verbose=False,
                         profile_callback=None):
+    '''Tries to find a valid actuation path from the starting state to the ending state,
+    where each step keeps the system within the constraints at all points. Tries the following
+    plans in order:
+    - Moving the full delta required for each actuator, in every permutation of actuator orders
+    - A greedy approach, where whichever actuator can make the most progress is allowed to move as much as it can
+    - Splitting the actuator deltas up, and moving to the target in multiple smaller paths
+    
+    Returns:
+        An actuator path, consisting of steps summarizing the actuation. If no valid actuator
+        path was found, a path will still be returned, but it won't contain any steps'''
+
     def profile_path(message):
         if profile_callback is not None:
             profile_callback(message)
@@ -2621,6 +2834,8 @@ def plan_actuation_path(x_start, x_target, M1, M2, M3, M4,
     start_reflections = get_reflection_count(*M_start)
     target_reflections = get_reflection_count(*M_target)
     start_qc1_error, start_qc2_error = quadcell_errors_from_variables(x_start, M1, M2, M3, M4)
+
+    # Check if starting state is fine or if it encounters failures
     start_diagnostics = actuation_constraint_diagnostics(
         x_start, M1, M2, M3, M4,
         max_qc_error=max_qc_error,
@@ -2634,14 +2849,17 @@ def plan_actuation_path(x_start, x_target, M1, M2, M3, M4,
     )
     start_within_constraints = start_diagnostics["ok"]
 
+    # How many reflections we expect to get (no value, unless we're staying the same from start to end)
     expected_reflections = None
     if preserve_reflection_count and start_reflections == target_reflections:
         expected_reflections = start_reflections
 
+    # Determines distance from start to target, as well as the direction
     delta = x_target - x_start
     active_axes = np.flatnonzero(np.abs(delta) > zero_tol)
 
     if not start_within_constraints:
+        # If we're starting outside of our constraints, then we don't have any steps in the plan
         return build_actuation_plan_summary(
             [], x_start, x_target, M1, M2, M3, M4,
             start_reflections, target_reflections, start_within_constraints,
@@ -2657,6 +2875,7 @@ def plan_actuation_path(x_start, x_target, M1, M2, M3, M4,
             failure_reason="Starting state is outside constraints: " + "; ".join(start_diagnostics["failures"])
         )
 
+    # Check if target position is within our constraints
     target_diagnostics = actuation_constraint_diagnostics(
         x_target, M1, M2, M3, M4,
         max_qc_error=max_qc_error,
@@ -2669,6 +2888,7 @@ def plan_actuation_path(x_start, x_target, M1, M2, M3, M4,
         constraint_tolerance=constraint_tolerance
     )
     if not target_diagnostics["ok"]:
+        # If our target is outside of our constraints, then our plan has no steps
         return build_actuation_plan_summary(
             [], x_start, x_target, M1, M2, M3, M4,
             start_reflections, target_reflections, start_within_constraints,
@@ -2685,6 +2905,7 @@ def plan_actuation_path(x_start, x_target, M1, M2, M3, M4,
         )
 
     if len(active_axes) == 0:
+        # If we're already at the target, our plan has no steps
         return build_actuation_plan_summary(
             [], x_start, x_target, M1, M2, M3, M4,
             start_reflections, target_reflections, start_within_constraints,
@@ -2699,11 +2920,13 @@ def plan_actuation_path(x_start, x_target, M1, M2, M3, M4,
             split_count=0
         )
 
+    # Get possible axis orders, thorough (includes all permutations) and fast (orders sorted ascending/descending by delta magnitude)
     full_axis_orders = candidate_axis_orders(active_axes, delta, include_all_permutations=True)
     fast_axis_orders = candidate_axis_orders(active_axes, delta, include_all_permutations=False)
 
     phase_t0 = time.perf_counter()
     for axis_order in full_axis_orders:
+        # See if this actuator sequence results in a valid path from the current state to the target state
         steps = try_one_actuator_sequence(
             x_start, x_target, axis_order, M1, M2, M3, M4,
             max_qc_error=max_qc_error,
@@ -2716,7 +2939,10 @@ def plan_actuation_path(x_start, x_target, M1, M2, M3, M4,
             include_edge_ends=include_edge_ends,
             constraint_tolerance=constraint_tolerance
         )
+
         if steps is not None:
+            # This order resulted in a valid path. Print it (maybe) and return a summary of the path
+
             profile_path(
                 f"path search full_orders dt={time.perf_counter() - phase_t0:.3f}s "
                 f"orders={len(full_axis_orders)} success=True steps={len(steps)}"
@@ -2734,11 +2960,14 @@ def plan_actuation_path(x_start, x_target, M1, M2, M3, M4,
                 search_mode="one_full_move_per_actuator",
                 split_count=1
             )
+
+    # No sequence of actuator movements resulted in a valid path
     profile_path(
         f"path search full_orders dt={time.perf_counter() - phase_t0:.3f}s "
         f"orders={len(full_axis_orders)} success=False"
     )
 
+    # Try a greedy actuator path instead
     phase_t0 = time.perf_counter()
     greedy_steps = try_greedy_one_actuator_path(
         x_start, x_target, M1, M2, M3, M4,
@@ -2755,6 +2984,7 @@ def plan_actuation_path(x_start, x_target, M1, M2, M3, M4,
         zero_tol=zero_tol
     )
     if greedy_steps is not None:
+        # If we got a valid actuator path, return a summary of it
         profile_path(
             f"path search greedy dt={time.perf_counter() - phase_t0:.3f}s "
             f"success=True steps={len(greedy_steps)}"
@@ -2772,9 +3002,12 @@ def plan_actuation_path(x_start, x_target, M1, M2, M3, M4,
             search_mode="greedy_single_actuator_moves",
             split_count=len(greedy_steps)
         )
+
+    # No greedy path found
     profile_path(
         f"path search greedy dt={time.perf_counter() - phase_t0:.3f}s success=False"
     )
+
 
     phase_t0 = time.perf_counter()
     for split_count in range(2, max_axis_splits + 1):
@@ -2783,6 +3016,7 @@ def plan_actuation_path(x_start, x_target, M1, M2, M3, M4,
         failed = False
 
         for split_index in range(split_count):
+            # Determine how much delta is happening each split
             remaining_splits = split_count - split_index
             remaining_delta = x_target - x_current
             split_delta = remaining_delta / remaining_splits
@@ -2792,15 +3026,18 @@ def plan_actuation_path(x_start, x_target, M1, M2, M3, M4,
             best_max_qc = np.inf
 
             for axis_order in fast_axis_orders:
+                # Test one actuator order with the defined splits
                 x_trial = x_current.copy()
                 trial_steps = []
                 order_failed = False
 
                 for axis_index in axis_order:
+                    # Try moving this actuator by the split delta amount
                     amount = split_delta[axis_index]
                     if abs(amount) <= zero_tol:
                         continue
 
+                    # Determine if the split actuation was valid or not
                     x_next = variables_with_axis_move(x_trial, axis_index, amount)
                     if not one_actuator_motion_is_valid(
                         x_trial, x_next, M1, M2, M3, M4,
@@ -2814,29 +3051,37 @@ def plan_actuation_path(x_start, x_target, M1, M2, M3, M4,
                         include_edge_ends=include_edge_ends,
                         constraint_tolerance=constraint_tolerance
                     ):
+                        # If invalid, then stop testing out this actuator sequence
                         order_failed = True
                         break
 
+                    # If split actuation was a success, then try the next actuator in the sequence
                     trial_steps.append((x_trial, x_next))
                     x_trial = x_next
 
+                # If this order already failed, go on to the next one
                 if order_failed:
                     continue
 
+                # Determine the quadcell errors
                 qc1_error, qc2_error = quadcell_errors_from_variables(x_trial, M1, M2, M3, M4)
                 qc_terms = [abs(qc1_error), abs(qc2_error)]
                 if max_qc_difference is not None:
                     qc_terms.append(abs(qc1_error - qc2_error))
                 order_max_qc = max(qc_terms)
+
+                # Pick the best order based on which one results in the least error
                 if order_max_qc < best_max_qc:
                     best_order = axis_order
                     best_steps = trial_steps
                     best_max_qc = order_max_qc
 
+            # If none of the orders failed, this number of splits didn't work
             if best_order is None:
                 failed = True
                 break
 
+            # Add info about the best actuation path to this split point to the total actuation path
             for x_previous, x_next in best_steps:
                 steps.append(make_actuation_step(
                     len(steps) + 1,
@@ -2853,6 +3098,7 @@ def plan_actuation_path(x_start, x_target, M1, M2, M3, M4,
                 ))
                 x_current = x_next.copy()
 
+        # If we didn't encounter a failure, and we're close to the target, then this number of splits worked
         if not failed and np.allclose(x_current, x_target, atol=1e-8, rtol=0):
             profile_path(
                 f"path search split dt={time.perf_counter() - phase_t0:.3f}s "
@@ -2872,9 +3118,11 @@ def plan_actuation_path(x_start, x_target, M1, M2, M3, M4,
                 split_count=split_count
             )
 
+        # Otherwise, this number of splits didn't work
         if verbose:
             print(f"No valid single-actuator path found with split_count={split_count}.")
 
+    # No number of splits got us to the target point, return an empty actuation path
     profile_path(
         f"path search split dt={time.perf_counter() - phase_t0:.3f}s "
         f"max_axis_splits={max_axis_splits} success=False"
@@ -2953,6 +3201,10 @@ def OPD_residuals(x, target_OPD, M1, M2, M3, M4,
                   enforce_edge_bounds=True,
                   include_edge_ends=False,
                   expected_edge_count=None):
+    '''Returns an array of caluclated residuals for a state. Residuals calculated
+    from OPD error, quadcell error, and reflection point location penalty'''
+
+    # Calculate residuals from quadcell and OPD errors
     g = metrics_from_variables(x, M1, M2, M3, M4)
 
     r_OPD = (g[1] - target_OPD) / SIGMA_OPD
@@ -2961,6 +3213,7 @@ def OPD_residuals(x, target_OPD, M1, M2, M3, M4,
 
     residuals = [r_OPD, r_qc1, r_qc2]
 
+    # If enforcing the edge bounds, adds the u value edge penalties (how far out of target range reflections occus) to residuals
     if enforce_edge_bounds:
         if expected_edge_count is None:
             edge_penalties = reflection_edge_penalties_from_variables(
@@ -2988,6 +3241,9 @@ def OPD_residuals_selected(x_selected, x_base, variable_indices, target_OPD, M1,
                            enforce_edge_bounds=True,
                            include_edge_ends=False,
                            expected_edge_count=None):
+    '''Returns the residuals for state x_base where the variable_indices have been
+    replaced by x_selected (used for optimization, while only changing some state parameters)'''
+
     x_full = expand_selected_variables(x_selected, x_base, variable_indices)
     return OPD_residuals(
         x_full, target_OPD, M1, M2, M3, M4,
@@ -3008,6 +3264,10 @@ def solve_OPD_configuration(target_OPD, M1, M2, M3, M4,
                             enforce_edge_bounds=True,
                             include_edge_ends=False,
                             verbose=0):
+    '''Solve for a nearby state that minimizes OPD and quadcell error by adjusting
+    the position and rotation of only the specified mirrors'''
+
+    # Get initial state and state parameters associated with the linear stages that are moving
     x0 = pack_variables(M1, M2, M3, M4)
     variable_indices = selected_OPD_variable_indices(moving_linear_stages)
     x0_selected = x0[variable_indices]
@@ -3016,6 +3276,7 @@ def solve_OPD_configuration(target_OPD, M1, M2, M3, M4,
         include_ends=include_edge_ends
     )) if enforce_edge_bounds else None
 
+    # Save stage bounds, and clamp any values in the selected state to the bounds
     if variable_bounds is None:
         bounds = (-np.inf, np.inf)
     else:
@@ -3025,6 +3286,7 @@ def solve_OPD_configuration(target_OPD, M1, M2, M3, M4,
         x0_selected = np.clip(x0_selected, lower_selected, upper_selected)
         bounds = (lower_selected, upper_selected)
 
+    # minimize the residuals by changing the positions of the selected stages
     res = least_squares(
         fun=lambda x: OPD_residuals_selected(
             x, x0, variable_indices,
@@ -3048,6 +3310,7 @@ def solve_OPD_configuration(target_OPD, M1, M2, M3, M4,
         gtol=1e-10
     )
 
+    # Return the result of the optimization
     x_opt = expand_selected_variables(res.x, x0, variable_indices)
     return x_opt, res
 
@@ -3143,6 +3406,8 @@ def linear_stage_x_bounds(M1, M2, M3, M4,
 
 def update_linear_stage_locs(previous_mirrors, current_mirrors,
                              M1_linear_loc, M2_linear_loc, M3_linear_loc):
+    '''Returns the new linear_loc values for each linear stage after making the step described'''
+
     prev_M1, prev_M2, prev_M3, _ = previous_mirrors
     curr_M1, curr_M2, curr_M3, _ = current_mirrors
 
@@ -3165,6 +3430,8 @@ def update_linear_stage_locs(previous_mirrors, current_mirrors,
     )
 
 def set_OPD_result_full_x(res, M1, M2, M3, M4):
+    '''Returns a consistent choose_OPD result layout, independent of which stage moved last:
+    [M1x, M2x, M3x, M1 angle, M2 angle, M3 angle, M4 angle]'''
     if res is None:
         return res
 
@@ -3217,9 +3484,12 @@ def OPD_from_variables(x, M1, M2, M3, M4):
     return metrics_from_variables(x, M1, M2, M3, M4)[1]
 
 def OPD_brackets_target(OPD_a, OPD_b, target_OPD):
+    '''Checks if two OPD values (a and b) 'surround' the target OPD (one bigger, one smaller)'''
     return (OPD_a - target_OPD) * (OPD_b - target_OPD) <= 0
 
 def find_linear_fraction_to_target(x_start, axis_index, dx_limit, target_OPD, M1, M2, M3, M4):
+    '''Find what fraction of a stage's total movement is required to achieve the target OPD,
+    if it's within the stage's limit. If going to the limit won't result in the target OPD, return None'''
     OPD_start = OPD_from_variables(x_start, M1, M2, M3, M4)
     if abs(OPD_start - target_OPD) <= 1e-12:
         return 0.0
@@ -3227,9 +3497,11 @@ def find_linear_fraction_to_target(x_start, axis_index, dx_limit, target_OPD, M1
     x_limit = variables_with_axis_move(x_start, axis_index, dx_limit)
     OPD_limit = OPD_from_variables(x_limit, M1, M2, M3, M4)
 
+    # If going to the max distance won't get to the OPD required, then don't bother
     if not OPD_brackets_target(OPD_start, OPD_limit, target_OPD):
         return None
 
+    # Binary search for the point where the OPD matches the target
     lo = 0.0
     hi = 1.0
     for _ in range(50):
@@ -3252,6 +3524,10 @@ def find_max_valid_linear_fraction(x_start, axis_index, dx_limit, M1, M2, M3, M4
                                    include_edge_ends=False,
                                    constraint_tolerance=0.0,
                                    scan_samples=80):
+    '''Determine what fraction of the available linear movement a stage can move
+    while keeping the state constrained'''
+
+    # Can't move the stage any further
     if abs(dx_limit) <= 1e-12:
         return 0.0
 
@@ -3350,13 +3626,21 @@ def append_constrained_path_steps(steps, x_start, x_target, M1, M2, M3, M4,
                                   include_edge_ends=False,
                                   constraint_tolerance=0.0,
                                   profile_callback=None):
+    '''Tries to find a constrained path from the starting state to the target state.
+    If found, adds the steps to the end of the passed in step path, and returns the
+    final state of the path as well as the found path'''
+    
     x_current = np.array(x_start, dtype=float).copy()
     x_target = np.array(x_target, dtype=float)
+
+    # Determine how many reflections we should end up with
     expected_reflections = None
     if preserve_reflection_count:
         expected_reflections = get_reflection_count(*unpack_variables(x_start, M1, M2, M3, M4))
     start_reflections = get_reflection_count(*unpack_variables(x_start, M1, M2, M3, M4))
     target_reflections = get_reflection_count(*unpack_variables(x_target, M1, M2, M3, M4))
+
+    # Checks if the starting position results in any failures
     start_diagnostics = actuation_constraint_diagnostics(
         x_start, M1, M2, M3, M4,
         max_qc_error=max_qc_error,
@@ -3369,7 +3653,9 @@ def append_constrained_path_steps(steps, x_start, x_target, M1, M2, M3, M4,
         constraint_tolerance=constraint_tolerance
     )
 
+    # If target is identical-ish to current
     if np.allclose(x_current, x_target, atol=1e-10, rtol=0):
+        # Don't need any steps, we're already close enough to the target
         return x_current, build_actuation_plan_summary(
             [], x_start, x_target, M1, M2, M3, M4,
             start_reflections,
@@ -3386,6 +3672,7 @@ def append_constrained_path_steps(steps, x_start, x_target, M1, M2, M3, M4,
             split_count=0
         )
 
+    # Tries to get a valid actuation path to the target point
     path_plan = plan_actuation_path(
         x_start,
         x_target,
@@ -3402,17 +3689,21 @@ def append_constrained_path_steps(steps, x_start, x_target, M1, M2, M3, M4,
         constraint_tolerance=constraint_tolerance
     )
 
+    # If an error occurred, return the current state and the empty path
     if path_plan["failure_reason"] is not None:
         return np.array(x_start, dtype=float).copy(), path_plan
 
+    # Adds each step in the found path to the end of the main actuation path that was passed in
     for step in path_plan["steps"]:
         step_new = dict(step)
         step_new["step"] = len(steps) + 1
         steps.append(step_new)
 
+    # If there aren't any step in the found path, return the current state and the empty path
     if len(path_plan["steps"]) == 0:
         return np.array(x_target, dtype=float).copy(), path_plan
 
+    # Return the state of the mirrors at the end of the path, and the found path
     return pack_variables(*path_plan["steps"][-1]["mirrors"]), path_plan
 
 def append_constrained_path_steps_fast_then_dense(
@@ -3429,14 +3720,21 @@ def append_constrained_path_steps_fast_then_dense(
         include_edge_ends=False,
         constraint_tolerance=0.0,
         profile_callback=None):
+    '''Tries searching for a constrained actuation path quickly (less samples in the
+    middle of actuation steps). If a fast path is found, validates it using the normal
+    step sample density. If the path ends up being invalid, searches for a path using
+    the normal density instead'''
+
     def profile_path(message):
         if profile_callback is not None:
             profile_callback(message)
 
+    # Determines how many samples to take in the middle of an actuator movement (to check that we're still constrained)
     dense_samples = motion_samples_per_step
     fast_samples = min(max(1, int(fast_motion_samples_per_step)), dense_samples)
 
     if fast_samples >= dense_samples:
+        # If fast mode is slower than dense mode, then just do dense mode
         return append_constrained_path_steps(
             steps, x_start, x_target, M1, M2, M3, M4,
             max_axis_splits=max_axis_splits,
@@ -3452,6 +3750,7 @@ def append_constrained_path_steps_fast_then_dense(
             profile_callback=profile_callback
         )
 
+    # Try moving to the target state in fast mode (less samples taken in the middle of an actuator movement)
     trial_steps = []
     phase_t0 = time.perf_counter()
     x_fast, fast_plan = append_constrained_path_steps(
@@ -3475,6 +3774,8 @@ def append_constrained_path_steps_fast_then_dense(
     )
 
     if fast_plan["failure_reason"] is None:
+        # If a fast mode path was found, validate it to make sure it actually works
+
         expected_reflections = None
         if preserve_reflection_count:
             expected_reflections = get_reflection_count(*unpack_variables(x_start, M1, M2, M3, M4))
@@ -3496,7 +3797,9 @@ def append_constrained_path_steps_fast_then_dense(
             f"fast path dense validation dt={time.perf_counter() - phase_t0:.3f}s "
             f"samples={dense_samples} ok={valid} reason={validation_reason}"
         )
+
         if valid:
+            # If the fast path is validated, then add the steps to the main path that was passed in
             for step in trial_steps:
                 step_new = dict(step)
                 step_new["step"] = len(steps) + 1
@@ -3507,6 +3810,7 @@ def append_constrained_path_steps_fast_then_dense(
             fast_plan["dense_validated"] = True
             return x_fast, fast_plan
 
+    # No fast path found, try finding a dense path
     phase_t0 = time.perf_counter()
     x_dense, dense_plan = append_constrained_path_steps(
         steps, x_start, x_target, M1, M2, M3, M4,
@@ -3527,6 +3831,8 @@ def append_constrained_path_steps_fast_then_dense(
         f"samples={dense_samples} failure={dense_plan['failure_reason']}"
     )
     dense_plan["fast_path_used"] = False
+
+    # Return the result of searching for a dense path
     return x_dense, dense_plan
 
 def append_waypoint_constrained_path_steps(
@@ -3545,6 +3851,7 @@ def append_waypoint_constrained_path_steps(
         constraint_tolerance=0.0,
         profile_callback=None):
     """Append a constrained path, recursively splitting through mid-waypoints."""
+
     def profile_path(message):
         if profile_callback is not None:
             profile_callback(message)
@@ -3554,6 +3861,9 @@ def append_waypoint_constrained_path_steps(
     segment_plans = []
 
     def route_segment(x_a, x_b, depth):
+        ''' '''
+
+        # Try to get a path from a to b
         trial_steps = []
         x_direct, direct_plan = append_constrained_path_steps_fast_then_dense(
             trial_steps, x_a, x_b, M1, M2, M3, M4,
@@ -3570,13 +3880,17 @@ def append_waypoint_constrained_path_steps(
             constraint_tolerance=constraint_tolerance,
             profile_callback=lambda msg: profile_path(f"depth={depth} {msg}")
         )
+
+        # If path is valid, return it
         if direct_plan["failure_reason"] is None:
             segment_plans.append(direct_plan)
             return x_direct, trial_steps, None
 
+        # If we're in too deep, return the starting state and stop
         if depth >= max_waypoint_depth:
             return x_a.copy(), [], direct_plan["failure_reason"]
 
+        # Break this segmen in half, making sure the midpoint is constrained
         x_mid = 0.5 * (x_a + x_b)
         expected_reflections = None
         if preserve_reflection_count:
@@ -3592,6 +3906,8 @@ def append_waypoint_constrained_path_steps(
             include_edge_ends=include_edge_ends,
             constraint_tolerance=constraint_tolerance
         )
+
+        # If midpoint isn't constrained, stop searching
         if not mid_diagnostics["ok"]:
             return (
                 x_a.copy(),
@@ -3599,6 +3915,7 @@ def append_waypoint_constrained_path_steps(
                 "Waypoint midpoint is outside path constraints: " + "; ".join(mid_diagnostics["failures"])
             )
 
+        # Recursively check first and second halves of segment to see if there have valid paths
         profile_path(f"depth={depth} direct path failed; splitting through midpoint")
         x_first, first_steps, first_failure = route_segment(x_a, x_mid, depth + 1)
         if first_failure is not None:
@@ -3608,10 +3925,13 @@ def append_waypoint_constrained_path_steps(
         if second_failure is not None:
             return x_first.copy(), first_steps, second_failure
 
+        # Return the ending state and a valid path along this segment
         return x_second, first_steps + second_steps, None
 
+    # Recursively search for a path from the starting state to the ending state
     x_final, routed_steps, failure_reason = route_segment(x_start, x_target, 0)
     if failure_reason is not None:
+        # If there was a failure, return summary about starting state constraints
         start_reflections = get_reflection_count(*unpack_variables(x_start, M1, M2, M3, M4))
         target_reflections = get_reflection_count(*unpack_variables(x_target, M1, M2, M3, M4))
         expected_reflections = start_reflections if preserve_reflection_count and start_reflections == target_reflections else None
@@ -3649,8 +3969,10 @@ def append_waypoint_constrained_path_steps(
         step_new["waypoint_path"] = True
         steps.append(step_new)
 
+    # Combine segment paths into one path
     plan = combine_actuation_plans(segment_plans)
     if plan is None:
+        # If path isn't real, return summary of current state
         start_reflections = get_reflection_count(*unpack_variables(x_start, M1, M2, M3, M4))
         target_reflections = get_reflection_count(*unpack_variables(x_target, M1, M2, M3, M4))
         expected_reflections = start_reflections if preserve_reflection_count and start_reflections == target_reflections else None
@@ -3669,6 +3991,8 @@ def append_waypoint_constrained_path_steps(
             search_mode="waypoint_already_at_target",
             split_count=0
         )
+
+    # Return found path
     plan["search_mode"] = "waypoint_" + str(plan.get("search_mode"))
     plan["waypoint_depth_limit"] = int(max_waypoint_depth)
     plan["waypoint_segments"] = len(segment_plans)
@@ -3683,32 +4007,45 @@ def solve_recenter_angles(x_current, M1, M2, M3, M4,
                           include_edge_ends=False,
                           verbose=0,
                           profile_callback=None):
+    '''Try to find a constrained state that recenters reflection points only by rotating mirrors.
+    If the found state is invalid, try to minimize quadcell error only by rotating mirrors.'''
+
     def profile_solve(message):
         if profile_callback is not None:
             profile_callback(message)
 
+    # Get state conditions
     M1_current, M2_current, M3_current, M4_current = unpack_variables(x_current, M1, M2, M3, M4)
     theta0 = np.array([M1_current[2], M2_current[2], M3_current[2], M4_current[2]], dtype=float)
 
     expected_u_count = target_reflections if include_edge_ends else max(target_reflections - 2, 0)
 
     def x_from_angles(angles):
+        '''Returns a state representing the mirrors' current positions with the specified angles'''
         x_trial = np.array(x_current, dtype=float).copy()
         x_trial[[1, 3, 5, 7]] = angles
         return x_trial
 
     def recenter_objective(angles):
+        '''Returns the sum of the squares of each quadcell error and the angle penalty (offset in specified angles vs current state angles)'''
         x_trial = x_from_angles(angles)
         g = metrics_from_variables(x_trial, M1, M2, M3, M4)
         angle_penalty = 1e-4 * np.sum((np.array(angles, dtype=float) - theta0) ** 2)
         return float(g[2] ** 2 + g[4] ** 2 + angle_penalty)
 
     def constrained_us(angles):
+        '''Returns the u values for a state with the inputted angles, or
+        [-inf, ...] if it results in an unexpected number of reflections'''
+
+        # Determine how many reflections this set of angles will result in
         x_trial = x_from_angles(angles)
         mirrors_trial = unpack_variables(x_trial, M1, M2, M3, M4)
+
+        # If unexpected number of reflections, return an array filled with negative infinity values
         if get_reflection_count(*mirrors_trial) != target_reflections:
             return np.full(expected_u_count, -np.inf, dtype=float)
 
+        # Gets the u values
         us = reflection_us_from_variables(
             x_trial, M1, M2, M3, M4,
             include_ends=include_edge_ends
@@ -3719,6 +4056,7 @@ def solve_recenter_angles(x_current, M1, M2, M3, M4,
 
     constraints = []
     for idx in range(expected_u_count):
+        # Creates constraints to make sure each reflection point is within the bounds
         constraints.append({
             "type": "ineq",
             "fun": lambda angles, i=idx: constrained_us(angles)[i] - u_min
@@ -3728,6 +4066,7 @@ def solve_recenter_angles(x_current, M1, M2, M3, M4,
             "fun": lambda angles, i=idx: u_max - constrained_us(angles)[i]
         })
 
+    # Finds the mirror rotations that result in all reflection points being recentered as much as possible
     phase_t0 = time.perf_counter()
     res = least_squares(
         fun=lambda th: center_quadcells_residuals(
@@ -3753,6 +4092,7 @@ def solve_recenter_angles(x_current, M1, M2, M3, M4,
         f"success={res.success}"
     )
 
+    # Makes sure the recentered state is constrained
     x_recentered = np.array(x_current, dtype=float).copy()
     x_recentered[[1, 3, 5, 7]] = res.x
     diagnostics = actuation_constraint_diagnostics(
@@ -3769,6 +4109,7 @@ def solve_recenter_angles(x_current, M1, M2, M3, M4,
         profile_solve("least_squares accepted")
         return x_recentered, res
 
+    # Least squares failed, try to minimize quadcell error and mirror delta rotation
     phase_t0 = time.perf_counter()
     minimize_res = minimize(
         recenter_objective,
@@ -3787,6 +4128,7 @@ def solve_recenter_angles(x_current, M1, M2, M3, M4,
     )
 
     if minimize_res.success:
+        # If the minimization was a success, make sure the state it returned is valid
         x_recentered = x_from_angles(minimize_res.x)
         diagnostics = actuation_constraint_diagnostics(
             x_recentered, M1, M2, M3, M4,
@@ -3802,6 +4144,7 @@ def solve_recenter_angles(x_current, M1, M2, M3, M4,
             profile_solve("SLSQP accepted")
             return x_recentered, minimize_res
 
+    # No valid solution found
     profile_solve("no recenter solution accepted")
     failed_res = SimpleNamespace(
         x=theta0.copy(),
@@ -3822,20 +4165,25 @@ def solve_final_centered_angles(x_current, target_OPD, M1, M2, M3, M4,
                                 include_edge_ends=False,
                                 verbose=0,
                                 profile_callback=None):
+    '''Try and find a centered state with the smallest error just by rotating mirrors at their current linear positions'''
+
     def profile_solve(message):
         if profile_callback is not None:
             profile_callback(message)
 
+    # Get starting state
     M1_current, M2_current, M3_current, M4_current = unpack_variables(x_current, M1, M2, M3, M4)
     theta0 = np.array([M1_current[2], M2_current[2], M3_current[2], M4_current[2]], dtype=float)
     expected_u_count = target_reflections if include_edge_ends else max(target_reflections - 2, 0)
 
     def x_from_angles(angles):
+        '''Change mirror angles the passed in values'''
         x_trial = np.array(x_current, dtype=float).copy()
         x_trial[[1, 3, 5, 7]] = angles
         return x_trial
 
     def constrained_us(angles):
+        '''Get u values for reflections after rotating the current mirrors to the angles passed in'''
         x_trial = x_from_angles(angles)
         mirrors_trial = unpack_variables(x_trial, M1, M2, M3, M4)
         if get_reflection_count(*mirrors_trial) != target_reflections:
@@ -3850,22 +4198,28 @@ def solve_final_centered_angles(x_current, target_OPD, M1, M2, M3, M4,
         return us
 
     def qc_values(angles):
+        '''Get quadcell errors after rotating the current mirrors to the angles passed in'''
         g = metrics_from_variables(x_from_angles(angles), M1, M2, M3, M4)
         return np.array([g[2], g[4]], dtype=float)
 
     def OPD_error(angles):
+        '''Get OPD error after rotating the current mirrors to the angles passed in'''
         return OPD_from_variables(x_from_angles(angles), M1, M2, M3, M4) - target_OPD
 
     def strict_objective(angles):
+        '''Get 'distance' from current angles to angles passed in (how much angles changed, plus resulting OPD error)'''
         angle_penalty = 1e-4 * np.sum((np.array(angles, dtype=float) - theta0) ** 2)
         return float(OPD_error(angles) ** 2 + angle_penalty)
 
     def qc_priority_objective(angles):
+        '''Get 'distance' from current angles to angles passed in (how much angles changed, 
+        resulting OPD error, and resulting quadcell errors, weighted towards the quadcell error)'''
         qc = qc_values(angles)
         angle_penalty = 1e-4 * np.sum((np.array(angles, dtype=float) - theta0) ** 2)
         OPD_penalty = 0.02 * OPD_error(angles) ** 2
         return float(np.sum(qc ** 2) + OPD_penalty + angle_penalty)
 
+    # Define base constraints that u vals must be within bounds for future optimization process
     base_constraints = []
     for idx in range(expected_u_count):
         base_constraints.append({
@@ -3877,6 +4231,7 @@ def solve_final_centered_angles(x_current, target_OPD, M1, M2, M3, M4,
             "fun": lambda angles, i=idx: u_max - constrained_us(angles)[i]
         })
 
+    # Define constraints on quadcell error for future optimization process
     detector_constraints = list(base_constraints)
     for idx in range(2):
         detector_constraints.append({
@@ -3889,7 +4244,12 @@ def solve_final_centered_angles(x_current, target_OPD, M1, M2, M3, M4,
         })
 
     def constrained_attempt_constraints(opd_tolerance):
+        '''Returns list of constraints for reflection points, quadcell errors, and OPD error'''
+
+        # Create constrint list, starting from base
         constraints = list(base_constraints)
+
+        # Add quadcell error constraints
         for idx in range(2):
             constraints.append({
                 "type": "ineq",
@@ -3900,6 +4260,7 @@ def solve_final_centered_angles(x_current, target_OPD, M1, M2, M3, M4,
                 "fun": lambda angles, i=idx: qc_tolerance + qc_values(angles)[i]
             })
 
+        # Add OPD constraint
         constraints.append({
             "type": "ineq",
             "fun": lambda angles: opd_tolerance - OPD_error(angles)
@@ -3908,12 +4269,18 @@ def solve_final_centered_angles(x_current, target_OPD, M1, M2, M3, M4,
             "type": "ineq",
             "fun": lambda angles: opd_tolerance + OPD_error(angles)
         })
+
         return constraints
 
     def accept_result(res, opd_tolerance, relaxed):
+        '''If optimization result ran okay and is within tolerances and constrained, update result 
+        to include errors and return. Return None if result was unsuccessful or outside tolerances'''
+
+        # If it wasn't a success, then return None
         if not res.success:
             return None
 
+        # Check errors/constraints of result state
         x_centered = x_from_angles(res.x)
         qc1_error, qc2_error = quadcell_errors_from_variables(x_centered, M1, M2, M3, M4)
         opd_error = OPD_error(res.x)
@@ -3927,6 +4294,8 @@ def solve_final_centered_angles(x_current, target_OPD, M1, M2, M3, M4,
             include_edge_ends=include_edge_ends,
             constraint_tolerance=0.0
         )
+
+        # If ran ok and within constraints, return result
         if (
             diagnostics["ok"] and
             abs(qc1_error) <= qc_tolerance and
@@ -3942,6 +4311,7 @@ def solve_final_centered_angles(x_current, target_OPD, M1, M2, M3, M4,
 
         return None
 
+    # Try to minimize the 'distance' from current state to rotated state with less OPD error
     phase_t0 = time.perf_counter()
     res = minimize(
         strict_objective,
@@ -3959,11 +4329,13 @@ def solve_final_centered_angles(x_current, target_OPD, M1, M2, M3, M4,
         f"success={res.success}"
     )
 
+    # Check result of optimization process, if successful return result
     x_accepted = accept_result(res, OPD_tolerance, relaxed=False)
     if x_accepted is not None:
         profile_solve("SLSQP strict accepted")
         return x_accepted, res
 
+    # Optimization didn't work well enough, try again with relaxed OPD constraint, prioritizing quadcell errors
     relaxed_res = None
     if qc_priority and relaxed_OPD_tolerance is not None and relaxed_OPD_tolerance > OPD_tolerance:
         phase_t0 = time.perf_counter()
@@ -3983,11 +4355,13 @@ def solve_final_centered_angles(x_current, target_OPD, M1, M2, M3, M4,
             f"success={relaxed_res.success}"
         )
 
+        # Check if this optimization worked or not, if so return the result
         x_accepted = accept_result(relaxed_res, relaxed_OPD_tolerance, relaxed=True)
         if x_accepted is not None:
             profile_solve("SLSQP qc_priority accepted")
             return x_accepted, relaxed_res
 
+    # Relaxed optimization didn't work, return the current state and the failed results of optimization
     profile_solve("no final center solution accepted")
     best_res = relaxed_res if relaxed_res is not None else res
     failed_res = SimpleNamespace(
@@ -4018,11 +4392,13 @@ def solve_centered_OPD_endpoint(x_current, target_OPD, M1, M2, M3, M4,
                                 include_edge_ends=False,
                                 verbose=0,
                                 profile_callback=None):
-    """Find a centered final OPD endpoint using linear x positions and angles."""
+    '''Try and find a nearby centered state with the smallest error by moving linear stages and rotating mirrors'''
+
     def profile_solve(message):
         if profile_callback is not None:
             profile_callback(message)
 
+    # Get current state parameters
     x_current = np.array(x_current, dtype=float)
     current_mirrors = unpack_variables(x_current, M1, M2, M3, M4)
     lower, upper = linear_stage_x_bounds(
@@ -4038,6 +4414,7 @@ def solve_centered_OPD_endpoint(x_current, target_OPD, M1, M2, M3, M4,
     bounds = list(zip(lower, upper))
     expected_u_count = target_reflections if include_edge_ends else max(target_reflections - 2, 0)
 
+    # Define normalization factors for each actuation axis
     motion_scale = np.array([2.0, 0.1, 2.0, 0.1, 2.0, 0.1, 1.0, 0.1], dtype=float)
 
     def qc_values(x):
@@ -4048,6 +4425,7 @@ def solve_centered_OPD_endpoint(x_current, target_OPD, M1, M2, M3, M4,
         return OPD_from_variables(x, M1, M2, M3, M4) - target_OPD
 
     def constrained_us(x):
+        '''Return list of constrained reflection point u values'''
         mirrors_trial = unpack_variables(x, M1, M2, M3, M4)
         if get_reflection_count(*mirrors_trial) != target_reflections:
             return np.full(expected_u_count, -np.inf, dtype=float)
@@ -4060,6 +4438,7 @@ def solve_centered_OPD_endpoint(x_current, target_OPD, M1, M2, M3, M4,
             return np.full(expected_u_count, -np.inf, dtype=float)
         return us
 
+    # Define base constraints for future optimization. U vals and quadcell errors need to be within acceptable ranges
     base_constraints = []
     for idx in range(expected_u_count):
         base_constraints.append({
@@ -4070,7 +4449,6 @@ def solve_centered_OPD_endpoint(x_current, target_OPD, M1, M2, M3, M4,
             "type": "ineq",
             "fun": lambda x, i=idx: u_max - constrained_us(x)[i]
         })
-
     for idx in range(2):
         base_constraints.append({
             "type": "ineq",
@@ -4082,6 +4460,7 @@ def solve_centered_OPD_endpoint(x_current, target_OPD, M1, M2, M3, M4,
         })
 
     def endpoint_constraints(opd_tolerance):
+        '''Return list of optimization constraints, built from base constraints. Adds tolerances on quadcell and OPD errors'''
         constraints = list(base_constraints)
         for idx in range(2):
             constraints.append({
@@ -4104,16 +4483,21 @@ def solve_centered_OPD_endpoint(x_current, target_OPD, M1, M2, M3, M4,
         return constraints
 
     def strict_objective(x):
+        '''Determine penalty for moving to this state, factoring new OPD error, quadcell errors, and motion distance needed'''
         motion_penalty = 1e-3 * np.sum(((np.array(x, dtype=float) - x_current) / motion_scale) ** 2)
         qc = qc_values(x)
         return float(OPD_error(x) ** 2 + 1e-3 * np.sum(qc ** 2) + motion_penalty)
 
     def qc_priority_objective(x):
+        '''Determine penalty for moving to this state, favoring quadcell error (but still including OPD error and motion distance)'''
         qc = qc_values(x)
         motion_penalty = 1e-3 * np.sum(((np.array(x, dtype=float) - x_current) / motion_scale) ** 2)
         return float(np.sum(qc ** 2) + 0.02 * OPD_error(x) ** 2 + motion_penalty)
 
     def accept_result(res, opd_tolerance, relaxed):
+        '''If optimization result ran okay and is within tolerances and constrained, update result 
+        to include errors and return. Return None if result was unsuccessful or outside tolerances'''
+        
         if not res.success:
             return None
 
@@ -4146,6 +4530,7 @@ def solve_centered_OPD_endpoint(x_current, target_OPD, M1, M2, M3, M4,
 
         return None
 
+    # Try to find a nearby state that minimizes quadcell and OPD errors
     phase_t0 = time.perf_counter()
     res = minimize(
         strict_objective,
@@ -4164,11 +4549,13 @@ def solve_centered_OPD_endpoint(x_current, target_OPD, M1, M2, M3, M4,
         f"success={res.success}"
     )
 
+    # If optimization was successful, return the result
     x_accepted = accept_result(res, OPD_tolerance, relaxed=False)
     if x_accepted is not None:
         profile_solve("flexible SLSQP strict accepted")
         return x_accepted, res
 
+    # If optiization wasn't successsful, relax OPD tolerance and prioritize quadcell error in optimization
     relaxed_res = None
     if relaxed_OPD_tolerance is not None and relaxed_OPD_tolerance > OPD_tolerance:
         phase_t0 = time.perf_counter()
@@ -4189,11 +4576,13 @@ def solve_centered_OPD_endpoint(x_current, target_OPD, M1, M2, M3, M4,
             f"success={relaxed_res.success}"
         )
 
+        # If optimization was succesful, return the result
         x_accepted = accept_result(relaxed_res, relaxed_OPD_tolerance, relaxed=True)
         if x_accepted is not None:
             profile_solve("flexible SLSQP qc_priority accepted")
             return x_accepted, relaxed_res
 
+    # If neither optimization worked, return current state and failed results 
     profile_solve("no flexible centered endpoint accepted")
     best_res = relaxed_res if relaxed_res is not None else res
     failed_res = SimpleNamespace(
@@ -4248,10 +4637,13 @@ def plan_OPD_linear_then_recenter(target_OPD, M1, M2, M3, M4,
         raise ValueError("linear_stage_order must include at least one stage.")
 
     if qc_plan_limit is None:
+        # Desired quadcell error
         qc_plan_limit = 1.5
     if qc_detector_limit is None:
+        # How much error the quadcell can take before losing the beam?
         qc_detector_limit = max(3.9, qc_plan_limit)
     if qc_hardware_stop is None:
+        # ???
         qc_hardware_stop = 3.5
     qc_plan_limit = float(qc_plan_limit)
     qc_detector_limit = float(qc_detector_limit)
@@ -4263,6 +4655,7 @@ def plan_OPD_linear_then_recenter(target_OPD, M1, M2, M3, M4,
         profile_sink = print
 
     def profile_log(message):
+        '''If profiling, print message plus current time elapsed'''
         if not profile:
             return
         elapsed = time.perf_counter() - profile_t0
@@ -4271,6 +4664,7 @@ def plan_OPD_linear_then_recenter(target_OPD, M1, M2, M3, M4,
         profile_sink(line)
 
     def profile_qc_edge_text(x):
+        '''Returns a string summarizing quadcell error and reflection point edge proximity'''
         qc1_error, qc2_error = quadcell_errors_from_variables(x, M1, M2, M3, M4)
         edge_summary = reflection_edge_summary(
             x, M1, M2, M3, M4,
@@ -4282,7 +4676,11 @@ def plan_OPD_linear_then_recenter(target_OPD, M1, M2, M3, M4,
         )
 
     def append_profiled_recenter_path(label, step_list, x_from, x_to):
+        '''Adds a path to the desired point to the end of the passed in step list'''
+
         callback = lambda msg: profile_log(f"{label} {msg}")
+
+        # Get qc errors and reflection point edge proximity for x we're leaving, and x we're going to
         from_qc = quadcell_errors_from_variables(x_from, M1, M2, M3, M4)
         to_qc = quadcell_errors_from_variables(x_to, M1, M2, M3, M4)
         from_edges = reflection_edge_summary(x_from, M1, M2, M3, M4, include_ends=include_edge_ends)
@@ -4293,9 +4691,11 @@ def plan_OPD_linear_then_recenter(target_OPD, M1, M2, M3, M4,
         )
         endpoint_min_u = min(from_edges["min_u"], to_edges["min_u"])
         endpoint_max_u = max(from_edges["max_u"], to_edges["max_u"])
+
         path_qc_limit = qc_plan_limit
         path_u_min = linear_u_min
         path_u_max = linear_u_max
+
         if endpoint_min_u < linear_u_min:
             path_u_min = max(0.0, endpoint_min_u - 1e-3)
         if endpoint_max_u > linear_u_max:
@@ -4306,7 +4706,10 @@ def plan_OPD_linear_then_recenter(target_OPD, M1, M2, M3, M4,
                 f"endpoint_max_qc={endpoint_max_qc:.3f} "
                 f"u=[{path_u_min:.4f},{path_u_max:.4f}]"
             )
+
         if fast_recenter_path:
+
+            # Looks for a constrained actuator path quickly (less step samples) before trying normal sample density
             return append_constrained_path_steps_fast_then_dense(
                 step_list, x_from, x_to, M1, M2, M3, M4,
                 max_axis_splits=correction_max_axis_splits,
@@ -4323,6 +4726,7 @@ def plan_OPD_linear_then_recenter(target_OPD, M1, M2, M3, M4,
                 profile_callback=callback
             )
 
+        # Adds a set of actuator steps towards the target point to the end of the path passed in
         return append_constrained_path_steps(
             step_list, x_from, x_to, M1, M2, M3, M4,
             max_axis_splits=correction_max_axis_splits,
@@ -4338,6 +4742,7 @@ def plan_OPD_linear_then_recenter(target_OPD, M1, M2, M3, M4,
             profile_callback=callback
         )
 
+    # Determines starting state conditions
     x_start = pack_variables(M1, M2, M3, M4)
     x_current = x_start.copy()
     start_OPD = OPD_from_variables(x_current, M1, M2, M3, M4)
@@ -4366,6 +4771,7 @@ def plan_OPD_linear_then_recenter(target_OPD, M1, M2, M3, M4,
     final_center_endpoint_reason = None
 
     if not start_diagnostics["ok"]:
+        # Starting state isn't fine, try to recenter system by only rotating mirrors
         phase_t0 = time.perf_counter()
         x_recentered, final_res = solve_recenter_angles(
             x_current, M1, M2, M3, M4,
@@ -4382,6 +4788,8 @@ def plan_OPD_linear_then_recenter(target_OPD, M1, M2, M3, M4,
             f"initial recenter solve dt={time.perf_counter() - phase_t0:.3f}s "
             f"{profile_qc_edge_text(x_recentered)}"
         )
+
+        # Get a path to the recentered state we just found
         phase_t0 = time.perf_counter()
         step_count_before = len(steps)
         x_current, correction_plan = append_profiled_recenter_path(
@@ -4396,9 +4804,11 @@ def plan_OPD_linear_then_recenter(target_OPD, M1, M2, M3, M4,
             failure_reason = "Initial recenter path failed: " + correction_plan["failure_reason"]
 
     for iteration_index in range(1, max_iterations + 1):
+
         if failure_reason is not None:
             break
 
+        # Check current OPD, if we're at the target then stop iterating
         current_OPD = OPD_from_variables(x_current, M1, M2, M3, M4)
         profile_log(
             f"iteration={iteration_index} OPD={current_OPD:.3f} "
@@ -4407,6 +4817,7 @@ def plan_OPD_linear_then_recenter(target_OPD, M1, M2, M3, M4,
         if abs(current_OPD - target_OPD) <= target_OPD_tolerance:
             break
 
+        # Determine the direction we're traveling, and the corresponding mirror stage order
         target_direction = 1 if target_OPD >= current_OPD else -1
         stage_order = linear_stage_order if target_direction > 0 else tuple(reversed(linear_stage_order))
         stage_index = stage_indices_by_direction[target_direction]
@@ -4415,6 +4826,7 @@ def plan_OPD_linear_then_recenter(target_OPD, M1, M2, M3, M4,
             failure_reason = "Linear stages reached their travel limits before the target OPD."
             break
 
+        # Determine how much the stage can move in this direction
         stage_name = stage_order[stage_index]
         axis_index = linear_stage_x_axis(stage_name)
         dx_limit = linear_stage_available_dx(
@@ -4423,11 +4835,13 @@ def plan_OPD_linear_then_recenter(target_OPD, M1, M2, M3, M4,
             linear_stage_guard_mm=linear_stage_guard_mm
         )
 
+        # If this stage can't move any further, move on to the next stage
         if abs(dx_limit) <= min_dx:
             profile_log(f"stage={stage_name} skipped dx_limit={dx_limit:.6g}")
             stage_indices_by_direction[target_direction] += 1
             continue
 
+        # Determine how far this stage can move while keeping the state constrained
         phase_t0 = time.perf_counter()
         fraction_to_constraint = find_max_valid_linear_fraction(
             x_current, axis_index, dx_limit, M1, M2, M3, M4,
@@ -4446,9 +4860,13 @@ def plan_OPD_linear_then_recenter(target_OPD, M1, M2, M3, M4,
             f"valid_fraction={fraction_to_constraint:.6g} "
             f"dt={time.perf_counter() - phase_t0:.3f}s"
         )
+
+        # If this stage's range allows the target OPD, save it
         fraction_to_target = None
         phase_t0 = time.perf_counter()
         if fraction_to_constraint > 1e-12:
+
+            # Check if we can get to the desired OPD in one move, while keeping the system constrained
             fraction_to_target_in_valid_range = find_linear_fraction_to_target(
                 x_current, axis_index, dx_limit * fraction_to_constraint,
                 target_OPD, M1, M2, M3, M4
@@ -4456,6 +4874,7 @@ def plan_OPD_linear_then_recenter(target_OPD, M1, M2, M3, M4,
             if fraction_to_target_in_valid_range is not None:
                 fraction_to_target = fraction_to_constraint * fraction_to_target_in_valid_range
 
+        # Determine how much movement should occur (fraction that gets you to OPD, or maximum movement if you can't get there)
         reached_target = fraction_to_target is not None and fraction_to_target <= fraction_to_constraint + 1e-9
         move_fraction = fraction_to_target if reached_target else fraction_to_constraint
         profile_log(
@@ -4465,6 +4884,7 @@ def plan_OPD_linear_then_recenter(target_OPD, M1, M2, M3, M4,
         )
 
         if move_fraction <= 1e-8:
+            # If barely moving, try to recenter system
             phase_t0 = time.perf_counter()
             x_recentered, final_res = solve_recenter_angles(
                 x_current, M1, M2, M3, M4,
@@ -4481,10 +4901,14 @@ def plan_OPD_linear_then_recenter(target_OPD, M1, M2, M3, M4,
                 f"zero-move recenter solve dt={time.perf_counter() - phase_t0:.3f}s "
                 f"{profile_qc_edge_text(x_recentered)}"
             )
+
+            # If recentered state is the same as current state, move on to the next stage
             if np.allclose(x_recentered, x_current, atol=1e-8, rtol=0):
                 profile_log(f"zero-move recenter unchanged; advancing past stage={stage_name}")
                 stage_indices_by_direction[target_direction] += 1
                 continue
+
+            # Add the recenter path to the main path
             phase_t0 = time.perf_counter()
             step_count_before = len(steps)
             x_current, correction_plan = append_profiled_recenter_path(
@@ -4495,11 +4919,14 @@ def plan_OPD_linear_then_recenter(target_OPD, M1, M2, M3, M4,
                 f"steps_added={len(steps) - step_count_before} "
                 f"failure={correction_plan['failure_reason']}"
             )
+
+            # If recentering failed for some reason, stop
             if correction_plan["failure_reason"] is not None:
                 failure_reason = "Recenter path failed: " + correction_plan["failure_reason"]
                 break
             continue
 
+        # Add movement step to the path
         x_next = variables_with_axis_move(x_current, axis_index, dx_limit * move_fraction)
         x_previous = x_current.copy()
         step_start_index = len(steps)
@@ -4530,6 +4957,7 @@ def plan_OPD_linear_then_recenter(target_OPD, M1, M2, M3, M4,
             step["linear_move_reached_target"] = bool(reached_target)
             step["linear_move_hit_constraint"] = bool(not reached_target and move_fraction < 1.0 - 1e-8)
 
+        # Update where stages all are after movement
         previous_mirrors = unpack_variables(x_previous, M1, M2, M3, M4)
         current_mirrors = unpack_variables(x_current, M1, M2, M3, M4)
         M1_linear_loc, M2_linear_loc, M3_linear_loc = update_linear_stage_locs(
@@ -4538,13 +4966,16 @@ def plan_OPD_linear_then_recenter(target_OPD, M1, M2, M3, M4,
             M1_linear_loc, M2_linear_loc, M3_linear_loc
         )
 
+        # Stop if at target OPD
         if reached_target:
             break
 
+        # If moved full available distance, move on to next stage
         if move_fraction >= 1.0 - 1e-8:
             stage_indices_by_direction[target_direction] += 1
             continue
 
+        # Try and recenter state by rotating mirrors
         phase_t0 = time.perf_counter()
         x_recentered, final_res = solve_recenter_angles(
             x_current, M1, M2, M3, M4,
@@ -4561,6 +4992,8 @@ def plan_OPD_linear_then_recenter(target_OPD, M1, M2, M3, M4,
             f"recenter solve dt={time.perf_counter() - phase_t0:.3f}s "
             f"{profile_qc_edge_text(x_recentered)}"
         )
+
+        # Add recentering path to main path
         phase_t0 = time.perf_counter()
         step_count_before = len(steps)
         x_current, correction_plan = append_profiled_recenter_path(
@@ -4575,13 +5008,19 @@ def plan_OPD_linear_then_recenter(target_OPD, M1, M2, M3, M4,
             failure_reason = "Recenter path failed: " + correction_plan["failure_reason"]
             break
     else:
+        # Went thru the max iterations without breaking out (reaching target)
         failure_reason = "Reached max_iterations while planning OPD actuation."
 
     if failure_reason is None:
+        # Found a path to the target OPD without any issues
+
+        # Check error of new state
         pre_final_qc1_error, pre_final_qc2_error = quadcell_errors_from_variables(
             x_current, M1, M2, M3, M4
         )
         pre_final_OPD_error = OPD_from_variables(x_current, M1, M2, M3, M4) - target_OPD
+
+        # Make sure final state is constrained
         pre_final_diagnostics = actuation_constraint_diagnostics(
             x_current, M1, M2, M3, M4,
             max_qc_error=qc_plan_limit,
@@ -4598,6 +5037,8 @@ def plan_OPD_linear_then_recenter(target_OPD, M1, M2, M3, M4,
             max(abs(pre_final_qc1_error), abs(pre_final_qc2_error)) <= final_center_qc_threshold
         )
         pre_final_OPD_ok = abs(pre_final_OPD_error) <= target_OPD_tolerance
+
+        # If quadcell error is fine, OPD error is fine, and final state is constrained, no need to recenter
         skip_final_center = (
             pre_final_qc_ok and
             pre_final_OPD_ok and
@@ -4610,7 +5051,9 @@ def plan_OPD_linear_then_recenter(target_OPD, M1, M2, M3, M4,
                 f"final_constraints_ok=True"
             )
         else:
+            # Error is too high, determine what's too high
             if pre_final_qc_ok:
+
                 reason_parts = []
                 if not pre_final_OPD_ok:
                     reason_parts.append(f"OPD_error={pre_final_OPD_error:.6g}")
@@ -4620,12 +5063,17 @@ def plan_OPD_linear_then_recenter(target_OPD, M1, M2, M3, M4,
                     "final center not skipped despite centered QC: " +
                     " | ".join(reason_parts)
                 )
+
+            # Determine if recentering is needed
             final_center_succeeded = False
             skip_angle_only_final_center = pre_final_qc_ok and pre_final_OPD_ok and not pre_final_diagnostics["ok"]
+
+            # If error is small but system isn't constrained, don't recenter
             if skip_angle_only_final_center:
                 final_center_failure_reason = "Skipped angle-only final centering because QC/OPD are already acceptable but final constraints are not."
                 profile_log("final center angle-only skipped; trying flexible endpoint")
             else:
+                # Try and recenter the system
                 phase_t0 = time.perf_counter()
                 x_centered, final_center_res = solve_final_centered_angles(
                     x_current,
@@ -4648,6 +5096,8 @@ def plan_OPD_linear_then_recenter(target_OPD, M1, M2, M3, M4,
                     f"changed={not np.allclose(x_centered, x_current, atol=1e-10, rtol=0)} "
                     f"success={getattr(final_center_res, 'success', None)}"
                 )
+
+                # If centered state is different from current state, adds a path to the centered state to the main path
                 if not np.allclose(x_centered, x_current, atol=1e-10, rtol=0):
                     phase_t0 = time.perf_counter()
                     step_count_before = len(steps)
@@ -4666,12 +5116,16 @@ def plan_OPD_linear_then_recenter(target_OPD, M1, M2, M3, M4,
                     else:
                         final_center_failure_reason = "Final center path failed: " + correction_plan["failure_reason"]
                 elif getattr(final_center_res, "success", False):
+                    # Centered state is current state, but recentering succeeded
                     final_res = final_center_res
                     final_center_succeeded = True
                 elif getattr(final_center_res, "success", False) is False:
+                    # Centered state is current state because recentering failed
                     final_center_failure_reason = final_center_res.message
 
+            # If recentering failed...
             if not final_center_succeeded:
+                # Try to find a nearby state that meets the target OPD, but isn't necessarily at the same mirror x positions
                 phase_t0 = time.perf_counter()
                 x_endpoint, endpoint_res = solve_centered_OPD_endpoint(
                     x_current,
@@ -4707,10 +5161,14 @@ def plan_OPD_linear_then_recenter(target_OPD, M1, M2, M3, M4,
                     f"u=[{endpoint_edges['min_u']:.3f},{endpoint_edges['max_u']:.3f}]"
                 )
 
+                # Check result of nearby search
                 if getattr(endpoint_res, "success", False):
+                    # Search was a success
                     phase_t0 = time.perf_counter()
                     step_count_before = len(steps)
                     x_before_endpoint_path = x_current.copy()
+
+                    # Try and find a path to the nearby found state
                     x_endpoint_path, endpoint_plan = append_waypoint_constrained_path_steps(
                         steps, x_current, x_endpoint, M1, M2, M3, M4,
                         max_axis_splits=correction_max_axis_splits,
@@ -4749,15 +5207,22 @@ def plan_OPD_linear_then_recenter(target_OPD, M1, M2, M3, M4,
                             endpoint_plan["failure_reason"]
                         )
                 else:
+                    # No nearby state was found
                     final_center_endpoint_reason = endpoint_res.message
 
+
     if failure_reason is None:
+        # Still no failures have occured
+
+        # Get final state error values
         phase_t0 = time.perf_counter()
         final_OPD_error = OPD_from_variables(x_current, M1, M2, M3, M4) - target_OPD
         final_qc1_error, final_qc2_error = quadcell_errors_from_variables(x_current, M1, M2, M3, M4)
         final_OPD_tolerance_used = target_OPD_tolerance
         if getattr(final_res, "final_center_OPD_relaxed", False):
             final_OPD_tolerance_used = final_OPD_relaxed_tolerance
+
+        # Make sure the final state is constrained
         final_diagnostics = actuation_constraint_diagnostics(
             x_current, M1, M2, M3, M4,
             max_qc_error=qc_plan_limit,
@@ -4769,6 +5234,8 @@ def plan_OPD_linear_then_recenter(target_OPD, M1, M2, M3, M4,
             include_edge_ends=include_edge_ends,
             constraint_tolerance=0.0
         )
+
+        # Check errors are within tolerance and final state is constrained, log it if they aren't
         if max(abs(final_qc1_error), abs(final_qc2_error)) > final_qc_tolerance:
             failure_reason = (
                 f"Final QC offset ({final_qc1_error:.4g}, {final_qc2_error:.4g}) "
@@ -4792,11 +5259,14 @@ def plan_OPD_linear_then_recenter(target_OPD, M1, M2, M3, M4,
             f"final_error={final_OPD_error:.6g} ok={failure_reason is None}"
         )
 
+    # Get details about the final state
     M1_opt, M2_opt, M3_opt, M4_opt = unpack_variables(x_current, M1, M2, M3, M4)
     if final_res is None:
         final_res = SimpleNamespace()
     final_res = set_OPD_result_full_x(final_res, M1_opt, M2_opt, M3_opt, M4_opt)
     target_reflections = get_reflection_count(M1_opt, M2_opt, M3_opt, M4_opt)
+
+    # Build a summary about the found actuation path
     plan = build_actuation_plan_summary(
         steps, x_start, x_current, M1, M2, M3, M4,
         get_reflection_count(M1, M2, M3, M4),
@@ -4864,6 +5334,7 @@ def plan_OPD_linear_then_recenter(target_OPD, M1, M2, M3, M4,
         f"final_error={plan['final_OPD_error']:.6g} failure={failure_reason}"
     )
 
+    # Return mirror parameters, result of the state optimization, and an actuan path to get to the found state
     return (M1_opt, M2_opt, M3_opt, M4_opt), final_res, plan
 
 # OPTIMIZING
@@ -5004,6 +5475,8 @@ def optimize_inverse(M1, M2, M3, M4, img_path_light, img_path_dark=None,
 
 def solve_center_once(theta0, M1, M2, M3, M4, target_reflections,
                       u_min=0.1, u_max=0.9, sigma_edge=0.1):
+    '''Optimizes current state to center beam in quadcells'''
+
     res = least_squares(
         fun=lambda th: center_quadcells_residuals(
             th, M1, M2, M3, M4,
@@ -5051,8 +5524,10 @@ def center_quadcells(M1, M2, M3, M4,
     wider final edge window.
     """
 
+    # Get starting state
     theta_init = np.array([M1[2], M2[2], M3[2], M4[2]], dtype=float)
 
+    # Check if we're already at the requested reflection count
     mirrors0 = build_mirrors(M1, M2, M3, M4)
     reflection_data0 = trace_reflections(laser_start, laser_angle, mirrors0)
     initial_reflections = len(reflection_data0)
@@ -5061,10 +5536,10 @@ def center_quadcells(M1, M2, M3, M4,
             raise ValueError("target_reflections and N_R were both provided with different values.")
         target_reflections = N_R
 
+    # Set defaults if no val provided
     if target_reflections is None:
         target_reflections = initial_reflections
     target_reflections = int(target_reflections)
-
     if final_qc_tolerance is not None:
         final_qc_tolerance = float(final_qc_tolerance)
         if final_qc_tolerance < 0:
@@ -5079,6 +5554,7 @@ def center_quadcells(M1, M2, M3, M4,
 
     rng = np.random.default_rng(seed)
 
+    # Get random mirror angle offset states close to current state
     starts = [theta_init]
     for _ in range(n_tries - 1):
         starts.append(theta_init + rng.uniform(-angle_perturb, angle_perturb, size=4))
@@ -5092,17 +5568,20 @@ def center_quadcells(M1, M2, M3, M4,
     centered_solution_count = 0
 
     for th0 in starts:
+        # Create new state using random offsets generated above
         M1_start = np.array([M1[0], M1[1], th0[0]], dtype=float)
         M2_start = np.array([M2[0], M2[1], th0[1]], dtype=float)
         M3_start = np.array([M3[0], M3[1], th0[2]], dtype=float)
         M4_start = np.array([M4[0], M4[1], th0[3]], dtype=float)
         start_reflections = get_reflection_count(M1_start, M2_start, M3_start, M4_start)
 
+        # Make sure it has the same number of reflections
         if start_reflections != target_reflections:
             continue
 
         matching_start_count += 1
 
+        # Optimize this state to reduce quadcell error
         res = solve_center_once(
             th0, M1, M2, M3, M4,
             target_reflections=target_reflections,
@@ -5110,6 +5589,7 @@ def center_quadcells(M1, M2, M3, M4,
             sigma_edge=sigma_edge
         )
 
+        # Recreate optiized state to make sure it has the requested reflection count
         M1_new = np.array([M1[0], M1[1], res.x[0]], dtype=float)
         M2_new = np.array([M2[0], M2[1], res.x[1]], dtype=float)
         M3_new = np.array([M3[0], M3[1], res.x[2]], dtype=float)
@@ -5151,6 +5631,7 @@ def center_quadcells(M1, M2, M3, M4,
         )
         g_final = np.array(g_final, dtype=float)
 
+        # Save result of quadcell optimization
         qc = np.array([g_final[2], g_final[4]], dtype=float)
         qc_norm = float(np.linalg.norm(qc))
         qc_max_abs = float(np.max(np.abs(qc)))
@@ -5164,6 +5645,7 @@ def center_quadcells(M1, M2, M3, M4,
             centered_solution_count += 1
             score = (angle_change, qc_norm)
 
+        # Save score if it's new best
         if score < best_score:
             best_score = score
             best_res = res
@@ -5178,6 +5660,7 @@ def center_quadcells(M1, M2, M3, M4,
             best_res.final_closest_edge_margin = final_closest_edge_margin
             best_res.final_u_ok = bool(final_u_ok)
 
+    # Make sure a valid result was found
     if best_res is None:
         if matching_start_count == 0:
             raise RuntimeError(
@@ -5198,6 +5681,7 @@ def center_quadcells(M1, M2, M3, M4,
             )
         raise RuntimeError(f"No valid centered solution found with N_R={target_reflections}.")
 
+    # Save final results
     best_res.selection_mode = (
         "min_qc_norm" if final_qc_tolerance is None else "min_angle_change_within_qc_tolerance"
     )
@@ -5213,6 +5697,7 @@ def center_quadcells(M1, M2, M3, M4,
     best_res.soft_u_min = float(u_min)
     best_res.soft_u_max = float(u_max)
 
+    # Save and return optimal state
     M1_opt = np.array([M1[0], M1[1], best_angles[0]], dtype=float)
     M2_opt = np.array([M2[0], M2[1], best_angles[1]], dtype=float)
     M3_opt = np.array([M3[0], M3[1], best_angles[2]], dtype=float)
@@ -10487,6 +10972,8 @@ def plan_reflection_count_change(M1, M2, M3, M4,
     exiting beam may leave/re-enter the detectors discontinuously when the
     reflection topology changes.
     """
+
+    # Get starting state
     M_start = (
         np.array(M1, dtype=float),
         np.array(M2, dtype=float),
@@ -10496,6 +10983,7 @@ def plan_reflection_count_change(M1, M2, M3, M4,
     x_start = pack_variables(*M_start)
     start_reflections = get_reflection_count(*M_start)
 
+    # Find state with desired reflection count, minimizing quadcell error
     M_target, res = center_quadcells(
         *M_start,
         N_R=target_N_R,
@@ -10516,6 +11004,7 @@ def plan_reflection_count_change(M1, M2, M3, M4,
     total_angle_motion = float(np.linalg.norm((x_target - x_start)[angle_axes]))
     cumulative_angle_motion = 0.0
 
+    # Find path (allowing unlimited quadcell error) to the optimized state and add it to the main path
     for axis_index in angle_axes:
         amount = float(x_target[axis_index] - x_current[axis_index])
         if abs(amount) <= min_angle_step:
@@ -10548,9 +11037,11 @@ def plan_reflection_count_change(M1, M2, M3, M4,
         steps.append(step)
         x_current = x_next
 
+    # Get final error after centering
     final_qc1_error, final_qc2_error = quadcell_errors_from_variables(x_target, *M_start)
     final_edge_summary = reflection_edge_summary(x_target, *M_start, include_ends=False)
 
+    # Return plan
     plan = {
         "steps": steps,
         "n_steps": len(steps),
@@ -10602,6 +11093,8 @@ def plan_reflection_count_reacquisition(M1, M2, M3, M4,
     where the first move reaches target_N_R with at least one QC in range, then
     the second move gets both QCs in range.
     """
+
+    # Get starting state
     M_start = (
         np.array(M1, dtype=float),
         np.array(M2, dtype=float),
@@ -10626,6 +11119,7 @@ def plan_reflection_count_reacquisition(M1, M2, M3, M4,
     start_qc1, start_qc2 = quadcell_errors_from_variables(x_start, *M_start)
 
     def metrics(x):
+        '''Get metrics about given state'''
         mirrors = unpack_variables(x, *M_start)
         qc1, qc2 = quadcell_errors_from_variables(x, *M_start)
         reflection_count = get_reflection_count(*mirrors)
@@ -10641,6 +11135,7 @@ def plan_reflection_count_reacquisition(M1, M2, M3, M4,
         }
 
     def build_plan(path, search_mode, candidates_checked, failure_reason=None):
+        '''Turn given path into actuation steps, and adds them to the main path'''
         steps = []
         total_motion = sum(abs(float(path[i][2])) for i in range(1, len(path)))
         cumulative = 0.0
@@ -10726,15 +11221,23 @@ def plan_reflection_count_reacquisition(M1, M2, M3, M4,
     first_leg_candidates = []
     candidates_checked = 0
 
+    # For each actuation axis...
     for label, axis_index in angle_axes:
+        # For either direction along that axis...
         for direction in (1.0, -1.0):
+            # For any given scan length...
             for amount_abs in scan_amounts:
+                # Move the selected actuator in the selected direction the selected distance, and test if that state works
                 amount = float(direction * amount_abs)
                 x_trial = variables_with_axis_move(x_start, axis_index, amount)
                 trial = metrics(x_trial)
                 candidates_checked += 1
+
+                # If trial state doesn't meet reflection count, skip it
                 if trial["reflection_count"] != target_N_R:
                     continue
+
+                # Meets reflection count, if both quadcells are in range then add this as a single actuator candidate
                 if trial["both_qc_in_range"]:
                     one_axis_candidates.append((
                         abs(amount),
@@ -10743,6 +11246,8 @@ def plan_reflection_count_reacquisition(M1, M2, M3, M4,
                         amount,
                         x_trial,
                     ))
+
+                # If only one quadcell is in range, add it as a condidate for the first half of a two actuator movement
                 if trial["one_qc_in_range"]:
                     first_leg_candidates.append((
                         abs(amount),
@@ -10754,6 +11259,7 @@ def plan_reflection_count_reacquisition(M1, M2, M3, M4,
                     ))
 
     if one_axis_candidates:
+        # Return valid one actuator movement path with smallest actuation
         one_axis_candidates.sort(key=lambda row: (row[0], row[1]))
         _, _, axis_index, amount, x_final = one_axis_candidates[0]
         return build_plan(
@@ -10766,6 +11272,7 @@ def plan_reflection_count_reacquisition(M1, M2, M3, M4,
             failure_reason=None,
         )
 
+    # No single actuator path available, check any 2 actuator path candidates
     first_leg_candidates.sort(key=lambda row: (row[0], row[1], row[2]))
     first_leg_candidates = first_leg_candidates[:max_first_leg_candidates]
     two_axis_candidates = []
@@ -10777,14 +11284,19 @@ def plan_reflection_count_reacquisition(M1, M2, M3, M4,
                 continue
             for direction in (1.0, -1.0):
                 for amount_abs in scan_amounts:
+                    # Find trial state by moving second actuator
                     second_amount = float(direction * amount_abs)
                     x_final = variables_with_axis_move(x_first, second_axis, second_amount)
                     trial = metrics(x_final)
                     candidates_checked += 1
+
+                    # If doesn't meet reflection count or quadcell constraint, then move on
                     if trial["reflection_count"] != target_N_R:
                         continue
                     if not trial["both_qc_in_range"]:
                         continue
+
+                    # Meets constraints, add the path as a candidate
                     total_motion = abs(float(first_amount)) + abs(float(second_amount))
                     two_axis_candidates.append((
                         total_motion,
@@ -10797,6 +11309,7 @@ def plan_reflection_count_reacquisition(M1, M2, M3, M4,
                         x_final,
                     ))
 
+    # Returns shortest two-candidate path that worked
     if two_axis_candidates:
         two_axis_candidates.sort(key=lambda row: (row[0], row[1]))
         _, _, first_axis, first_amount, x_first, second_axis, second_amount, x_final = two_axis_candidates[0]
@@ -10811,6 +11324,7 @@ def plan_reflection_count_reacquisition(M1, M2, M3, M4,
             failure_reason=None,
         )
 
+    # Return failure if no path found
     failure_reason = (
         "No one- or two-actuator reacquisition plan found for "
         f"N_R={target_N_R} within +/-{qc_reacquire_limit} mm over "
@@ -11704,6 +12218,21 @@ def choose_OPD(target_OPD, M1, M2, M3, M4,
                profile=False,
                profile_sink=None,
                **legacy_qc_kwargs):
+    '''Searches for a nearby state with the desired OPD. Returns the mirrors in the state, the state
+    itself, and an actuation path to the state (if desired). First tries to jump directly to the found
+    state in one path. Then tries to break the OPD gap into several smaller jumps, and tries to find
+    paths for each of the smaller jumps. NOTE: Potential bug with internal return_actuation_plan
+    variable never being true in later portions of the code
+
+    Returns:
+        out:
+            (M1, M2, M3, M4) (mirror parameters)
+        res:
+            Result of the search process, in the format [M1x, M2x, M3x, M1 angle, M2 angle, M3 angle, M4 angle]
+        actuation_plan:
+            Path of actuation steps to the found state (only returned if return_actuation_plan is true)
+    '''
+
     if "max_qc_error" in legacy_qc_kwargs:
         qc_plan_limit = legacy_qc_kwargs.pop("max_qc_error")
     if "qc_hard_limit" in legacy_qc_kwargs:
@@ -11721,27 +12250,34 @@ def choose_OPD(target_OPD, M1, M2, M3, M4,
     max_qc_error = qc_plan_limit
     moving_linear_stages = _normalized_linear_stage_order(moving_linear_stages)
 
+    # Determine OPD for current configuration
     x_start = pack_variables(M1, M2, M3, M4)
     start_OPD = metrics_from_variables(x_start, M1, M2, M3, M4)[1]
 
+    # Indicate that some of the linear stages have provided locations
     provided_linear_stage_locs = any(
         loc is not None for loc in [M1_linear_loc, M2_linear_loc, M3_linear_loc]
     )
     use_linear_stage_limits = provided_linear_stage_locs
 
+    # Set provided linear stage locations
     if provided_linear_stage_locs:
         M1_linear_loc = 0.0 if M1_linear_loc is None else float(M1_linear_loc)
         M2_linear_loc = 0.0 if M2_linear_loc is None else float(M2_linear_loc)
         M3_linear_loc = 0.0 if M3_linear_loc is None else float(M3_linear_loc)
 
+
     if return_actuation_plan:
+
         if not provided_linear_stage_locs:
+            # If no location provided, assume linear stages are in the middle of their range
             assumed_midpoint = LINEAR_STAGE_TRAVEL_MM / 2.0
             M1_linear_loc = assumed_midpoint
             M2_linear_loc = assumed_midpoint
             M3_linear_loc = assumed_midpoint
-        correction_max_axis_splits = max_axis_splits if n_actuation_steps is None else n_actuation_steps
 
+        # Search for a path to a state with the desired OPD
+        correction_max_axis_splits = max_axis_splits if n_actuation_steps is None else n_actuation_steps
         mirrors_opt, final_res, actuation_plan = plan_OPD_linear_then_recenter(
             target_OPD,
             M1, M2, M3, M4,
@@ -11783,6 +12319,7 @@ def choose_OPD(target_OPD, M1, M2, M3, M4,
             }
         return mirrors_opt, final_res, actuation_plan
 
+    # Breaking OPD jump into segments with a maximum OPD jump size
     segment_max_OPD_step = max_OPD_step
     if use_linear_stage_limits and return_actuation_plan and max_OPD_step is not None:
         segment_max_OPD_step = max_OPD_step
@@ -11793,6 +12330,7 @@ def choose_OPD(target_OPD, M1, M2, M3, M4,
         n_segments = int(np.ceil(abs(target_OPD - start_OPD) / segment_max_OPD_step))
         segment_targets = list(np.linspace(start_OPD, target_OPD, n_segments + 1)[1:])
 
+    # Get current mirror parameters
     current_M1 = np.array(M1, dtype=float)
     current_M2 = np.array(M2, dtype=float)
     current_M3 = np.array(M3, dtype=float)
@@ -11802,7 +12340,10 @@ def choose_OPD(target_OPD, M1, M2, M3, M4,
     final_res = None
     x_opt = None
 
+    # Tbh idk when this condition is met... when return_actuation_plan is true, you already returned out of this function in the earlier if statement
     if return_actuation_plan and auto_recenter_start:
+
+        # Check starting state is constrained
         start_diagnostics = actuation_constraint_diagnostics(
             x_start, current_M1, current_M2, current_M3, current_M4,
             max_qc_error=max_qc_error,
@@ -11816,7 +12357,9 @@ def choose_OPD(target_OPD, M1, M2, M3, M4,
         )
 
         if not start_diagnostics["ok"]:
-            variable_bounds = None
+            
+            # Define which linear stages can be moved, and their respective bounds
+            variable_bounds = None            
             recenter_stages = moving_linear_stages
             if use_linear_stage_limits:
                 variable_bounds = linear_stage_x_bounds(
@@ -11827,6 +12370,7 @@ def choose_OPD(target_OPD, M1, M2, M3, M4,
                 )
                 recenter_stages = moving_linear_stages
 
+            # Find a nearby state that minimizes error, by only moving the selected mirrors
             x_recentered, final_res = solve_OPD_configuration(
                 start_OPD,
                 current_M1, current_M2, current_M3, current_M4,
@@ -11840,6 +12384,7 @@ def choose_OPD(target_OPD, M1, M2, M3, M4,
                 verbose=optimizer_verbose
             )
 
+            # Try to get a valid path to this recentered state
             recenter_plan = plan_actuation_path(
                 x_start, x_recentered,
                 current_M1, current_M2, current_M3, current_M4,
@@ -11859,6 +12404,7 @@ def choose_OPD(target_OPD, M1, M2, M3, M4,
             recenter_plan["recenter_reason"] = "; ".join(start_diagnostics["failures"])
             segment_plans.append(recenter_plan)
 
+            # If recentering failed, return the latest state and the path this far
             if recenter_plan["failure_reason"] is not None:
                 x_opt = x_recentered
                 actuation_plan = combine_actuation_plans(segment_plans)
@@ -11868,11 +12414,14 @@ def choose_OPD(target_OPD, M1, M2, M3, M4,
                 final_res = set_OPD_result_full_x(final_res, M1_opt, M2_opt, M3_opt, M4_opt)
                 return (M1_opt, M2_opt, M3_opt, M4_opt), final_res, actuation_plan
 
+            # Update current state to be recentered state
             previous_mirrors = (current_M1, current_M2, current_M3, current_M4)
             current_M1, current_M2, current_M3, current_M4 = unpack_variables(
                 x_recentered,
                 current_M1, current_M2, current_M3, current_M4
             )
+
+            # Update location of linear stages
             if use_linear_stage_limits:
                 M1_linear_loc, M2_linear_loc, M3_linear_loc = update_linear_stage_locs(
                     previous_mirrors,
@@ -11883,9 +12432,13 @@ def choose_OPD(target_OPD, M1, M2, M3, M4,
     segment_index = 0
     min_adaptive_OPD_step = 0.25
 
+    # Repeat for as many OPD jumps as we want...
     while segment_index < len(segment_targets):
+        # Get target OPD
         segment_target = segment_targets[segment_index]
+        
         if use_linear_stage_limits:
+            # We're using the linear stage limits found earlier
             current_OPD = metrics_from_variables(
                 pack_variables(current_M1, current_M2, current_M3, current_M4),
                 current_M1, current_M2, current_M3, current_M4
@@ -11895,6 +12448,7 @@ def choose_OPD(target_OPD, M1, M2, M3, M4,
             failed_segment_plans = []
 
             for stage_name in stage_order:
+                # Saerch for a nearby state with the target OPD for this segment
                 x_segment_start = pack_variables(current_M1, current_M2, current_M3, current_M4)
                 variable_bounds = linear_stage_x_bounds(
                     current_M1, current_M2, current_M3, current_M4,
@@ -11915,6 +12469,7 @@ def choose_OPD(target_OPD, M1, M2, M3, M4,
                     verbose=optimizer_verbose
                 )
 
+                # If we didn't move, check if we're at the target OPD. If so, break out of loop. Otherwise move on to next actuator
                 if np.allclose(x_segment_target, x_segment_start, atol=1e-9, rtol=0):
                     current_OPD = metrics_from_variables(
                         x_segment_start,
@@ -11925,6 +12480,7 @@ def choose_OPD(target_OPD, M1, M2, M3, M4,
                         break
                     continue
 
+                # If a path is required, find a path to the newly found state
                 if return_actuation_plan:
                     if n_actuation_steps is not None:
                         max_axis_splits = n_actuation_steps
@@ -11955,6 +12511,7 @@ def choose_OPD(target_OPD, M1, M2, M3, M4,
                         continue
                     segment_plans.append(segment_plan)
 
+                # Update mirror locations to reflect the new state
                 previous_mirrors = (current_M1, current_M2, current_M3, current_M4)
                 current_M1, current_M2, current_M3, current_M4 = unpack_variables(
                     x_segment_target,
@@ -11972,6 +12529,7 @@ def choose_OPD(target_OPD, M1, M2, M3, M4,
                         "M3": M3_linear_loc
                     }
 
+                # Check new OPD, if at target move on to next segment
                 x_opt = x_segment_target
                 segment_accepted = True
                 current_OPD = metrics_from_variables(
@@ -11981,24 +12539,34 @@ def choose_OPD(target_OPD, M1, M2, M3, M4,
                 if abs(current_OPD - segment_target) <= constraint_tolerance:
                     break
 
+            # Check if the last segment had a viable path
             if not segment_accepted:
+                # There wasn't a viable path to the found state
+
                 current_OPD = metrics_from_variables(
                     pack_variables(current_M1, current_M2, current_M3, current_M4),
                     current_M1, current_M2, current_M3, current_M4
                 )[1]
+
+                # If the state made enough progress towards target OPD, try again with a segmnt going to the halfway point between start and the found state
                 if abs(segment_target - current_OPD) > min_adaptive_OPD_step:
                     midpoint_OPD = current_OPD + 0.5 * (segment_target - current_OPD)
                     segment_targets.insert(segment_index, midpoint_OPD)
                     continue
 
+                # Not enough progress was made, break out of the loop and save the failed path
                 if return_actuation_plan and failed_segment_plans:
                     segment_plans.append(failed_segment_plans[-1])
                 x_opt = pack_variables(current_M1, current_M2, current_M3, current_M4)
                 break
 
+            # Viable path was found, move on to next segment
             segment_index += 1
             continue
 
+        # We're not using linear stage limits
+
+        # Search for a nearby state with the segment's target OPD
         x_segment_start = pack_variables(current_M1, current_M2, current_M3, current_M4)
         x_segment_target, final_res = solve_OPD_configuration(
             segment_target,
@@ -12012,6 +12580,7 @@ def choose_OPD(target_OPD, M1, M2, M3, M4,
             verbose=optimizer_verbose
         )
 
+        # If required, search for a path to the found state
         if return_actuation_plan:
             if n_actuation_steps is not None:
                 max_axis_splits = n_actuation_steps
@@ -12037,19 +12606,23 @@ def choose_OPD(target_OPD, M1, M2, M3, M4,
                 x_opt = x_segment_target
                 break
 
+        # Update current state, move on to the next segment
         current_M1, current_M2, current_M3, current_M4 = unpack_variables(
             x_segment_target,
             current_M1, current_M2, current_M3, current_M4
         )
         x_opt = x_segment_target
         segment_index += 1
-    
+
+    # Update the state to reflect the latest state found in the loop
     M1_opt, M2_opt, M3_opt, M4_opt = unpack_variables(x_opt, current_M1, current_M2, current_M3, current_M4)
     final_res = set_OPD_result_full_x(final_res, M1_opt, M2_opt, M3_opt, M4_opt)
 
+    # Return the final result of the searching
     if not return_actuation_plan:
         return (M1_opt, M2_opt, M3_opt, M4_opt), final_res
 
+    # Create and return an actuation path to the final state found
     actuation_plan = combine_actuation_plans(segment_plans)
     if actuation_plan is None:
         actuation_plan = build_actuation_plan_summary(
@@ -12120,6 +12693,7 @@ def sim_reflection_pts_by_mirror(
     M1y, M2y, M3y, M4y,
     M1a, M2a, M3a, M4a
 ):
+    '''Get camera pixels corresponding to reflection points for the given setup'''
     path = simulation_reflec(M1x, M1y, M2x, M2y, M3x, M3y, M4x, M4y,
         M1a, M2a, M3a, M4a)
 
